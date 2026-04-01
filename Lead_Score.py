@@ -925,9 +925,9 @@ def show_login_page():
                 else:
                     st.warning("Please fill in both fields.")
         with col_b:
-            if st.button("Demo Creds", use_container_width=True, key="demo_btn"):
-                with st.expander("Credentials", expanded=True):
-                    st.code("Username: admin\nPassword: admin123")
+          #  if st.button("Demo Creds", use_container_width=True, key="demo_btn"):
+             #   with st.expander("Credentials", expanded=True):
+                #    st.code("Username: admin\nPassword: admin123")
 
         st.markdown("""
           </div>
