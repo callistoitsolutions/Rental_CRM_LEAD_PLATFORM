@@ -924,7 +924,7 @@ def show_login_page():
                         st.error("Invalid credentials.")
                 else:
                     st.warning("Please fill in both fields.")
-       with col_b:
+        with col_b:
           if False:  # hidden button
                if st.button("Demo Creds", use_container_width=True, key="demo_btn"):
                   with st.expander("Credentials", expanded=True):
