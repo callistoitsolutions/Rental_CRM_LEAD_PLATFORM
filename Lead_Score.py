@@ -24,22 +24,19 @@ warnings.filterwarnings('ignore')
 # PAGE CONFIGURATION
 # ============================================================================
 st.set_page_config(
-    page_title="AI Lead Scoring Pro",
+    page_title="LeadScore Pro",
     page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ============================================================================
-# DATABASE FUNCTIONS
+# DATABASE FUNCTIONS (unchanged)
 # ============================================================================
 
 def init_database():
-    """Initialize database with migration support"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
-    
-    # Create users table
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT UNIQUE NOT NULL,
@@ -49,8 +46,6 @@ def init_database():
                   last_login TIMESTAMP,
                   is_active BOOLEAN DEFAULT 1,
                   role TEXT DEFAULT 'user')''')
-    
-    # Create usage_logs table
     c.execute('''CREATE TABLE IF NOT EXISTS usage_logs
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -59,8 +54,6 @@ def init_database():
                   leads_scored INTEGER,
                   timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   FOREIGN KEY (user_id) REFERENCES users (id))''')
-    
-    # Create sessions table
     c.execute('''CREATE TABLE IF NOT EXISTS sessions
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -69,29 +62,22 @@ def init_database():
                   is_active BOOLEAN DEFAULT 1,
                   session_token TEXT,
                   FOREIGN KEY (user_id) REFERENCES users (id))''')
-    
-    # Migration: Add missing columns
     try:
         c.execute("PRAGMA table_info(sessions)")
         columns = [column[1] for column in c.fetchall()]
-        
         if 'is_active' not in columns:
             c.execute("ALTER TABLE sessions ADD COLUMN is_active BOOLEAN DEFAULT 1")
             conn.commit()
-            
         if 'session_token' not in columns:
             c.execute("ALTER TABLE sessions ADD COLUMN session_token TEXT")
             conn.commit()
-    except Exception as e:
+    except Exception:
         pass
-    
-    # Create admin user if not exists
     c.execute("SELECT * FROM users WHERE username = 'admin'")
     if not c.fetchone():
         admin_password = hashlib.sha256('admin123'.encode()).hexdigest()
         c.execute("INSERT INTO users (username, password_hash, email, role) VALUES (?, ?, ?, ?)",
                   ('admin', admin_password, 'admin@leadscore.com', 'admin'))
-    
     conn.commit()
     conn.close()
 
@@ -99,53 +85,37 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def verify_user(username, password):
-    """Verify and login user"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
-    
     try:
         password_hash = hash_password(password)
         c.execute("SELECT id, username, role, is_active FROM users WHERE username = ? AND password_hash = ?",
                   (username, password_hash))
-        
         user = c.fetchone()
-        
         if user and user[3]:
             c.execute("UPDATE users SET last_login = ? WHERE id = ?", (datetime.now(), user[0]))
             session_token = hashlib.md5(f"{user[0]}{datetime.now()}".encode()).hexdigest()
-            
             try:
-                c.execute("UPDATE sessions SET is_active = 0, logout_time = ? WHERE user_id = ? AND is_active = 1", 
+                c.execute("UPDATE sessions SET is_active = 0, logout_time = ? WHERE user_id = ? AND is_active = 1",
                           (datetime.now(), user[0]))
             except sqlite3.OperationalError:
                 pass
-            
             try:
                 c.execute("INSERT INTO sessions (user_id, login_time, is_active, session_token) VALUES (?, ?, ?, ?)",
                           (user[0], datetime.now(), 1, session_token))
             except sqlite3.OperationalError:
                 c.execute("INSERT INTO sessions (user_id, login_time) VALUES (?, ?)",
                           (user[0], datetime.now()))
-            
             conn.commit()
             conn.close()
-            
-            return {
-                'id': user[0], 
-                'username': user[1], 
-                'role': user[2], 
-                'is_active': user[3], 
-                'session_token': session_token
-            }
-        
+            return {'id': user[0], 'username': user[1], 'role': user[2], 'is_active': user[3], 'session_token': session_token}
         conn.close()
         return None
-    except Exception as e:
+    except Exception:
         conn.close()
         return None
 
 def create_user_by_admin(username, password, email):
-    """Admin creates user"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
     try:
@@ -160,7 +130,6 @@ def create_user_by_admin(username, password, email):
         return False
 
 def logout_user(user_id):
-    """Logout user"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
     try:
@@ -173,7 +142,6 @@ def logout_user(user_id):
     conn.close()
 
 def log_usage(user_id, action, details="", leads_scored=0):
-    """Log activity"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
     c.execute("INSERT INTO usage_logs (user_id, action, details, leads_scored) VALUES (?, ?, ?, ?)",
@@ -182,7 +150,6 @@ def log_usage(user_id, action, details="", leads_scored=0):
     conn.close()
 
 def get_user_stats(user_id):
-    """Get user stats"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM usage_logs WHERE user_id = ? AND action = 'score_leads'", (user_id,))
@@ -195,7 +162,6 @@ def get_user_stats(user_id):
     return {'total_scorings': total_scorings, 'total_leads': total_leads, 'total_logins': total_logins}
 
 def get_all_users():
-    """Get all users"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
     c.execute("SELECT id, username, email, created_at, last_login, is_active, role FROM users ORDER BY created_at DESC")
@@ -204,55 +170,29 @@ def get_all_users():
     return users
 
 def get_currently_logged_in_users():
-    """Get currently logged in users"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
     try:
-        c.execute("""
-            SELECT u.id, u.username, u.email, s.login_time, u.role
-            FROM sessions s
-            JOIN users u ON s.user_id = u.id
-            WHERE s.is_active = 1
-            ORDER BY s.login_time DESC
-        """)
+        c.execute("""SELECT u.id, u.username, u.email, s.login_time, u.role
+                     FROM sessions s JOIN users u ON s.user_id = u.id
+                     WHERE s.is_active = 1 ORDER BY s.login_time DESC""")
         active_users = c.fetchall()
     except sqlite3.OperationalError:
         active_users = []
     conn.close()
     return active_users
 
-def get_user_activity_details(user_id):
-    """Get detailed activity for a specific user"""
-    conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("""
-        SELECT action, details, leads_scored, timestamp
-        FROM usage_logs
-        WHERE user_id = ?
-        ORDER BY timestamp DESC
-        LIMIT 20
-    """, (user_id,))
-    activities = c.fetchall()
-    conn.close()
-    return activities
-
 def get_all_user_activities():
-    """Get all activities from all users"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
-    c.execute("""
-        SELECT u.username, l.action, l.details, l.leads_scored, l.timestamp
-        FROM usage_logs l
-        JOIN users u ON l.user_id = u.id
-        ORDER BY l.timestamp DESC
-        LIMIT 100
-    """)
+    c.execute("""SELECT u.username, l.action, l.details, l.leads_scored, l.timestamp
+                 FROM usage_logs l JOIN users u ON l.user_id = u.id
+                 ORDER BY l.timestamp DESC LIMIT 100""")
     activities = c.fetchall()
     conn.close()
     return activities
 
 def get_system_stats():
-    """Get system stats"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users WHERE role = 'user'")
@@ -269,16 +209,10 @@ def get_system_stats():
     c.execute("SELECT COUNT(*) FROM sessions WHERE DATE(login_time) = DATE('now')")
     today_logins = c.fetchone()[0]
     conn.close()
-    return {
-        'total_users': total_users,
-        'currently_online': currently_online,
-        'total_scorings': total_scorings,
-        'total_leads': total_leads,
-        'today_logins': today_logins
-    }
+    return {'total_users': total_users, 'currently_online': currently_online,
+            'total_scorings': total_scorings, 'total_leads': total_leads, 'today_logins': today_logins}
 
 def toggle_user_status(user_id, is_active):
-    """Enable/disable user"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
     c.execute("UPDATE users SET is_active = ? WHERE id = ?", (is_active, user_id))
@@ -286,19 +220,26 @@ def toggle_user_status(user_id, is_active):
     conn.close()
 
 def delete_user(user_id):
-    """Delete user"""
     conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
     c = conn.cursor()
     c.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     conn.close()
 
+def get_user_activity_details(user_id):
+    conn = sqlite3.connect('lead_scoring.db', check_same_thread=False)
+    c = conn.cursor()
+    c.execute("""SELECT action, details, leads_scored, timestamp FROM usage_logs
+                 WHERE user_id = ? ORDER BY timestamp DESC LIMIT 20""", (user_id,))
+    activities = c.fetchall()
+    conn.close()
+    return activities
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
 def map_probability_to_category(prob_score):
-    """Map probability (0-100) to category label."""
     if prob_score >= 70:
         return "Hot"
     elif prob_score >= 40:
@@ -308,12 +249,8 @@ def map_probability_to_category(prob_score):
 
 @st.cache_data
 def load_data(file_path):
-    """Load data from Excel file"""
     try:
-        if isinstance(file_path, str):
-            df = pd.read_excel(file_path)
-        else:
-            df = pd.read_excel(file_path)
+        df = pd.read_excel(file_path)
         return df
     except Exception as e:
         st.error(f"Error loading file: {e}")
@@ -321,23 +258,16 @@ def load_data(file_path):
 
 @st.cache_resource
 def train_model(df):
-    """Train RandomForest model with progress tracking"""
-    
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
-    # Feature engineering
     status_text.markdown("🔧 **Step 1/5:** Feature Engineering...")
     progress_bar.progress(20)
-    
     if "budget_min" in df.columns and "budget_max" in df.columns:
         df["budget_mid"] = df[["budget_min", "budget_max"]].mean(axis=1)
     elif "budget" in df.columns:
         df["budget_mid"] = pd.to_numeric(df["budget"], errors='coerce')
     else:
         df["budget_mid"] = np.nan
-
-    # Budget match feature
     if df["budget_mid"].notna().any():
         min_b, max_b = df["budget_mid"].min(), df["budget_mid"].max()
         if min_b == max_b or pd.isna(min_b) or pd.isna(max_b):
@@ -346,47 +276,30 @@ def train_model(df):
             df["budget_match"] = (df["budget_mid"] - min_b) / (max_b - min_b)
     else:
         df["budget_match"] = 0.5
-
-    # Area match feature
     if "preferred_area" in df.columns:
         area_freq = df["preferred_area"].fillna("unknown").value_counts(normalize=True)
         df["area_match"] = df["preferred_area"].fillna("unknown").map(area_freq).fillna(0.5)
     else:
         df["area_match"] = 0.5
-
-    # Behavior scores
     beh_cols = ["views_count", "avg_view_time_sec", "saved_properties", "repeated_visits"]
     for c in beh_cols:
         if c not in df.columns:
             df[c] = 0
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    # Normalize behavior columns
     for c in beh_cols:
         mx = df[c].max()
         if mx > 0:
             df[c + "_norm"] = df[c] / mx
         else:
             df[c + "_norm"] = 0.0
-
-    # Engagement score
-    df["engagement_score"] = (
-        0.4 * df["views_count_norm"] +
-        0.2 * df["avg_view_time_sec_norm"] +
-        0.25 * df["saved_properties_norm"] +
-        0.15 * df["repeated_visits_norm"]
-    )
-
-    # Interaction features
+    df["engagement_score"] = (0.4 * df["views_count_norm"] + 0.2 * df["avg_view_time_sec_norm"] +
+                               0.25 * df["saved_properties_norm"] + 0.15 * df["repeated_visits_norm"])
     inter_cols = ["whatsapp_clicks", "call_clicks", "chat_messages"]
     for c in inter_cols:
         if c not in df.columns:
             df[c] = 0
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
     df["total_interactions"] = df[inter_cols].sum(axis=1)
-
-    # Recency features
     if "last_active_time" in df.columns:
         df["last_active_time"] = pd.to_datetime(df["last_active_time"], errors="coerce")
         now = pd.Timestamp.now()
@@ -394,29 +307,17 @@ def train_model(df):
         df["recency_score"] = 1 / (1 + df["days_since_active"])
     else:
         df["recency_score"] = 0.0
-
-    # Prepare features
     status_text.markdown("📊 **Step 2/5:** Preparing Features...")
     progress_bar.progress(40)
-    
-    feature_cols = [
-        "budget_match", "area_match", "engagement_score",
-        "total_interactions", "recency_score",
-    ]
-    
+    feature_cols = ["budget_match", "area_match", "engagement_score", "total_interactions", "recency_score"]
     if "source" in df.columns:
         feature_cols.append("source")
     if "bhk" in df.columns:
         feature_cols.append("bhk")
-
     X = df[feature_cols].copy()
-
-    # Prepare target
     y = None
     if "converted" in df.columns:
         y = pd.to_numeric(df["converted"], errors="coerce")
-
-    # Handle missing labels
     if y is None or y.isna().all():
         status_text.markdown("🤖 **Using unsupervised learning:** Creating pseudo-labels with KMeans...")
         numeric_for_kmeans = X.select_dtypes(include=[np.number]).fillna(0)
@@ -427,65 +328,30 @@ def train_model(df):
         mask = y.notna()
         X = X[mask].reset_index(drop=True)
         y = y[mask].astype(int).reset_index(drop=True)
-
     if len(X) < 10:
         raise ValueError("Not enough data to train model after cleaning")
-
-    # Build preprocessing pipeline
     status_text.markdown("🔨 **Step 3/5:** Building ML Pipeline...")
     progress_bar.progress(60)
-    
     num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = X.select_dtypes(include=["object", "category"]).columns.tolist()
-
     transformers = []
     if num_cols:
-        num_transformer = Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler())
-        ])
+        num_transformer = Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())])
         transformers.append(("num", num_transformer, num_cols))
-
     if cat_cols:
-        cat_transformer = Pipeline([
-            ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
-            ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
-        ])
+        cat_transformer = Pipeline([("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
+                                     ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False))])
         transformers.append(("cat", cat_transformer, cat_cols))
-
     preprocessor = ColumnTransformer(transformers=transformers)
-
-    # RandomForest model
-    rf = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=10,
-        random_state=42,
-        n_jobs=-1,
-        class_weight="balanced"
-    )
-
-    pipeline = Pipeline([
-        ("preprocess", preprocessor),
-        ("rf", rf)
-    ])
-
-    # Train/test split
+    rf = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1, class_weight="balanced")
+    pipeline = Pipeline([("preprocess", preprocessor), ("rf", rf)])
     status_text.markdown("🎯 **Step 4/5:** Training Model...")
     progress_bar.progress(80)
-    
     stratify_y = y if len(np.unique(y)) > 1 else None
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, random_state=42, stratify=stratify_y
-    )
-
-    # Train model
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=stratify_y)
     pipeline.fit(X_train, y_train)
-
-    # Predictions
     y_pred = pipeline.predict(X_test)
     y_proba = pipeline.predict_proba(X_test)[:, 1] if len(np.unique(y)) == 2 else None
-
-    # Evaluation metrics
     accuracy = accuracy_score(y_test, y_pred)
     roc_auc = None
     if y_proba is not None and len(np.unique(y_test)) == 2:
@@ -493,1667 +359,1188 @@ def train_model(df):
             roc_auc = roc_auc_score(y_test, y_proba)
         except:
             pass
-
-    # Score all leads
     status_text.markdown("✨ **Step 5/5:** Scoring All Leads...")
     progress_bar.progress(100)
-    
     df_scored = df.copy()
     lead_probability = pipeline.predict_proba(X)[:, 1]
     df_scored.loc[X.index, "lead_score"] = (lead_probability * 100).round(0).astype(int)
     df_scored["lead_score"] = df_scored["lead_score"].fillna(0).astype(int)
     df_scored["lead_category"] = df_scored["lead_score"].apply(map_probability_to_category)
-    
     status_text.markdown("✅ **Model Training Complete!**")
-    progress_bar.progress(100)
-    
     return pipeline, df_scored, feature_cols, accuracy, roc_auc
 
-def create_gauge_chart(value, title, color):
-    """Create a professional gauge chart"""
+def create_donut_chart(value, title, color, bg_color):
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=value,
-        title={'text': title, 'font': {'size': 20, 'color': '#1e293b', 'family': 'Inter'}},
-        number={'font': {'size': 40, 'color': color, 'family': 'Inter'}},
+        title={'text': title, 'font': {'size': 13, 'color': '#64748b', 'family': 'DM Sans'}},
+        number={'font': {'size': 28, 'color': '#1e293b', 'family': 'DM Sans'}, 'suffix': '%'},
         gauge={
-            'axis': {'range': [None, 100], 'tickwidth': 2, 'tickcolor': "#cbd5e1"},
-            'bar': {'color': color},
-            'bgcolor': "white",
-            'borderwidth': 2,
-            'bordercolor': "#e2e8f0",
-            'steps': [
-                {'range': [0, 40], 'color': '#dbeafe'},
-                {'range': [40, 70], 'color': '#fef3c7'},
-                {'range': [70, 100], 'color': '#fee2e2'}
-            ],
-            'threshold': {
-                'line': {'color': color, 'width': 4},
-                'thickness': 0.75,
-                'value': value
-            }
+            'axis': {'range': [None, 100], 'tickwidth': 0, 'visible': False},
+            'bar': {'color': color, 'thickness': 0.75},
+            'bgcolor': bg_color,
+            'borderwidth': 0,
+            'steps': [{'range': [0, 100], 'color': bg_color}],
         }
     ))
-    
-    fig.update_layout(
-        height=250,
-        margin=dict(l=20, r=20, t=50, b=20),
-        paper_bgcolor='rgba(0,0,0,0)',
-        font={'family': 'Inter'}
-    )
-    
+    fig.update_layout(height=180, margin=dict(l=10, r=10, t=40, b=10),
+                      paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      font={'family': 'DM Sans'})
     return fig
 
 # ============================================================================
-# LOGIN PAGE
+# NEW THEME CSS — Navy Sidebar + White Card Dashboard
+# ============================================================================
+THEME_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+* { font-family: 'DM Sans', sans-serif !important; }
+
+/* ─── App Background ─── */
+[data-testid="stAppViewContainer"] {
+    background-color: #f0f4f8 !important;
+}
+.block-container {
+    padding: 1.5rem 2rem 2rem 2rem !important;
+    max-width: 100% !important;
+}
+
+/* ─── Sidebar: Deep Navy ─── */
+[data-testid="stSidebar"] {
+    background: #0f2044 !important;
+    padding: 0 !important;
+    border-right: none !important;
+}
+[data-testid="stSidebar"] > div:first-child {
+    padding: 0 !important;
+}
+[data-testid="stSidebar"] * {
+    color: #c8d8f0 !important;
+}
+[data-testid="stSidebar"] .stRadio label,
+[data-testid="stSidebar"] .stFileUploader label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] small {
+    color: #9ab0cc !important;
+    font-size: 0.85rem !important;
+}
+[data-testid="stSidebar"] h3 {
+    color: #e8f0fc !important;
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 1rem 0 0.5rem 0 !important;
+}
+[data-testid="stSidebar"] .stButton > button {
+    background: #f97316 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 0.6rem 1rem !important;
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+    letter-spacing: 0.03em !important;
+    box-shadow: none !important;
+    transition: background 0.2s !important;
+    text-transform: none !important;
+    width: 100% !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: #ea6c0a !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+[data-testid="stSidebar"] hr {
+    border-color: #1e3660 !important;
+    margin: 1rem 0 !important;
+}
+[data-testid="stSidebar"] .stRadio > div {
+    gap: 0.4rem !important;
+}
+[data-testid="stSidebar"] .stRadio label {
+    background: rgba(255,255,255,0.05) !important;
+    border-radius: 6px !important;
+    padding: 0.4rem 0.75rem !important;
+    cursor: pointer !important;
+    transition: background 0.15s !important;
+}
+[data-testid="stSidebar"] .stRadio label:hover {
+    background: rgba(255,255,255,0.1) !important;
+}
+
+/* ─── Top Page Header Bar ─── */
+.page-topbar {
+    background: white;
+    border-radius: 12px;
+    padding: 16px 24px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    border: 1px solid #e8edf2;
+}
+.page-topbar-title {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #0f2044;
+    margin: 0;
+}
+.page-topbar-sub {
+    font-size: 0.82rem;
+    color: #94a3b8;
+    margin: 0;
+}
+.topbar-badge {
+    background: #f97316;
+    color: white;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 20px;
+    letter-spacing: 0.03em;
+}
+
+/* ─── Stat Cards (white, shadow) ─── */
+.stat-card {
+    background: white;
+    border-radius: 12px;
+    padding: 20px 20px 16px 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    border: 1px solid #e8edf2;
+    position: relative;
+    overflow: hidden;
+    min-height: 110px;
+}
+.stat-card-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    margin-bottom: 12px;
+}
+.stat-card-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: #0f2044;
+    line-height: 1;
+    margin-bottom: 4px;
+}
+.stat-card-label {
+    font-size: 0.78rem;
+    color: #94a3b8;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.stat-card-accent {
+    position: absolute;
+    right: 0; top: 0; bottom: 0;
+    width: 4px;
+    border-radius: 0 12px 12px 0;
+}
+
+/* ─── Section Cards ─── */
+.section-card {
+    background: white;
+    border-radius: 12px;
+    padding: 20px 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    border: 1px solid #e8edf2;
+    margin-bottom: 16px;
+}
+.section-card-title {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #0f2044;
+    margin: 0 0 4px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.section-card-sub {
+    font-size: 0.78rem;
+    color: #94a3b8;
+    margin: 0 0 16px 0;
+}
+
+/* ─── Tabs: Clean pill style ─── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px !important;
+    background: white !important;
+    padding: 6px !important;
+    border-radius: 10px !important;
+    border: 1px solid #e8edf2 !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
+    backdrop-filter: none !important;
+}
+.stTabs [data-baseweb="tab"] {
+    background: transparent !important;
+    border-radius: 7px !important;
+    padding: 8px 18px !important;
+    font-weight: 500 !important;
+    color: #64748b !important;
+    border: none !important;
+    font-size: 0.85rem !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+    transition: all 0.15s !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    background: #f1f5f9 !important;
+    color: #0f2044 !important;
+}
+.stTabs [aria-selected="true"] {
+    background: #0f2044 !important;
+    color: white !important;
+    box-shadow: none !important;
+}
+
+/* ─── Buttons ─── */
+.stButton > button {
+    background: #0f2044 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 0.55rem 1.25rem !important;
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+    transition: background 0.2s !important;
+    box-shadow: none !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+}
+.stButton > button:hover {
+    background: #1a3563 !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+.stDownloadButton > button {
+    background: #059669 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 0.55rem 1.25rem !important;
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+    transition: background 0.2s !important;
+    box-shadow: none !important;
+}
+.stDownloadButton > button:hover {
+    background: #047857 !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+/* ─── DataFrames ─── */
+[data-testid="stDataFrame"] {
+    border-radius: 10px !important;
+    overflow: hidden !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06) !important;
+    border: 1px solid #e8edf2 !important;
+}
+
+/* ─── Metrics ─── */
+[data-testid="stMetricValue"] {
+    font-size: 1.8rem !important;
+    font-weight: 700 !important;
+    color: #0f2044 !important;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 0.75rem !important;
+    color: #94a3b8 !important;
+    font-weight: 500 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.06em !important;
+}
+
+/* ─── Headings in main area ─── */
+h1, h2, h3 {
+    color: #0f2044 !important;
+    font-weight: 700 !important;
+    border: none !important;
+    padding: 0 !important;
+    margin-top: 0 !important;
+}
+h3 { font-size: 1rem !important; }
+
+/* ─── Alerts ─── */
+.stAlert {
+    border-radius: 8px !important;
+    font-size: 0.85rem !important;
+    border-left: 3px solid !important;
+}
+
+/* ─── Progress Bar ─── */
+.stProgress > div > div > div > div {
+    background: #f97316 !important;
+    border-radius: 6px !important;
+}
+
+/* ─── Expanders ─── */
+.streamlit-expanderHeader {
+    background: #f8fafc !important;
+    border-radius: 8px !important;
+    border: 1px solid #e8edf2 !important;
+    font-weight: 600 !important;
+    color: #0f2044 !important;
+    padding: 0.75rem 1rem !important;
+    backdrop-filter: none !important;
+}
+
+/* ─── Inputs ─── */
+.stTextInput > div > div > input,
+.stSelectbox > div > div > select,
+.stNumberInput > div > div > input {
+    border-radius: 8px !important;
+    border: 1px solid #d1d9e6 !important;
+    background: white !important;
+    color: #0f2044 !important;
+    padding: 0.55rem 0.75rem !important;
+    font-size: 0.875rem !important;
+    backdrop-filter: none !important;
+}
+.stTextInput > div > div > input:focus {
+    border-color: #0f2044 !important;
+    box-shadow: 0 0 0 2px rgba(15,32,68,0.12) !important;
+}
+
+/* ─── Slider ─── */
+.stSlider > div > div > div {
+    background: #f97316 !important;
+}
+
+/* ─── Sidebar Nav Items ─── */
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 20px;
+    border-radius: 8px;
+    margin: 2px 12px;
+    cursor: pointer;
+    color: #9ab0cc;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: all 0.15s;
+}
+.nav-item:hover { background: rgba(255,255,255,0.08); color: white; }
+.nav-item.active { background: #f97316; color: white; }
+.nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+/* ─── User avatar in sidebar ─── */
+.sidebar-profile {
+    padding: 24px 20px 16px 20px;
+    border-bottom: 1px solid #1e3660;
+    margin-bottom: 8px;
+}
+.sidebar-avatar {
+    width: 48px; height: 48px;
+    background: linear-gradient(135deg, #f97316, #fb923c);
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; color: white; font-weight: 700;
+    margin-bottom: 10px;
+}
+.sidebar-name {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #e8f0fc !important;
+    margin: 0 0 2px 0;
+}
+.sidebar-role {
+    font-size: 0.73rem;
+    color: #6b8aaa !important;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+/* ─── Stat mini pills ─── */
+.stat-pill {
+    display: inline-block;
+    background: rgba(249,115,22,0.15);
+    color: #fb923c;
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin: 2px 0;
+}
+
+/* ─── Category badges ─── */
+.badge-hot { background:#fee2e2; color:#dc2626; padding:3px 10px; border-radius:20px; font-size:0.75rem; font-weight:600; }
+.badge-warm { background:#fff7ed; color:#ea580c; padding:3px 10px; border-radius:20px; font-size:0.75rem; font-weight:600; }
+.badge-cold { background:#eff6ff; color:#2563eb; padding:3px 10px; border-radius:20px; font-size:0.75rem; font-weight:600; }
+
+/* ─── Online dot ─── */
+.dot-online {
+    display: inline-block;
+    width: 8px; height: 8px;
+    background: #10b981;
+    border-radius: 50%;
+    margin-right: 6px;
+    box-shadow: 0 0 6px #10b981;
+}
+
+/* ─── Mobile ─── */
+@media (max-width: 768px) {
+    .block-container { padding: 1rem !important; }
+    .stat-card-value { font-size: 1.4rem !important; }
+}
+</style>
+"""
+
+# ============================================================================
+# LOGIN PAGE — new clean theme
 # ============================================================================
 
 def show_login_page():
-    """Professional login page with modern design"""
-    
-    # Creative CSS for login page
     st.markdown("""
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap');
-        
-        [data-testid="stAppViewContainer"] {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            font-family: 'Poppins', sans-serif;
-        }
-        
-        .login-container {
-            max-width: 480px;
-            margin: 80px auto;
-            padding: 0;
-            background: white;
-            border-radius: 24px;
-            box-shadow: 0 30px 80px rgba(0,0,0,0.3);
-            overflow: hidden;
-            animation: slideUp 0.6s ease-out;
-        }
-        
-        @keyframes slideUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        .login-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 40px 30px;
-            text-align: center;
-            color: white;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .login-header::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
-            animation: pulse 4s ease-in-out infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); opacity: 0.5; }
-            50% { transform: scale(1.1); opacity: 0.3; }
-        }
-        
-        .login-icon {
-            font-size: 80px;
-            margin-bottom: 15px;
-            display: inline-block;
-            animation: float 3s ease-in-out infinite;
-            position: relative;
-            z-index: 1;
-        }
-        
-        @keyframes float {
-            0%, 100% { transform: translateY(0px); }
-            50% { transform: translateY(-15px); }
-        }
-        
-        .login-title {
-            font-size: 2.2rem;
-            font-weight: 800;
-            margin: 0;
-            position: relative;
-            z-index: 1;
-            letter-spacing: -0.5px;
-        }
-        
-        .login-subtitle {
-            font-size: 1rem;
-            opacity: 0.95;
-            margin-top: 8px;
-            font-weight: 400;
-            position: relative;
-            z-index: 1;
-        }
-        
-        .login-body {
-            padding: 40px 35px;
-        }
-        
-        .input-label {
-            font-size: 0.9rem;
-            font-weight: 600;
-            color: #334155;
-            margin-bottom: 8px;
-            display: block;
-        }
-        
-        .stTextInput > div > div > input {
-            border: 2px solid #e2e8f0;
-            border-radius: 12px;
-            padding: 14px 18px;
-            font-size: 1rem;
-            transition: all 0.3s ease;
-            background: #f8fafc;
-        }
-        
-        .stTextInput > div > div > input:focus {
-            border-color: #667eea;
-            background: white;
-            box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
-        }
-        
-        .login-button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 12px;
-            padding: 16px 24px;
-            font-size: 1.1rem;
-            font-weight: 700;
-            width: 100%;
-            margin-top: 10px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
-        }
-        
-        .login-button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 12px 30px rgba(102, 126, 234, 0.5);
-        }
-        
-        .demo-button {
-            background: white;
-            color: #667eea;
-            border: 2px solid #667eea;
-            border-radius: 12px;
-            padding: 16px 24px;
-            font-size: 1.1rem;
-            font-weight: 700;
-            width: 100%;
-            margin-top: 10px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        .demo-button:hover {
-            background: #f8fafc;
-            transform: translateY(-2px);
-        }
-        
-        .feature-card {
-            background: linear-gradient(135deg, #f8fafc 0%, #e0e7ff 100%);
-            padding: 20px;
-            border-radius: 16px;
-            margin-top: 30px;
-            border: 2px solid #e0e7ff;
-        }
-        
-        .feature-title {
-            font-size: 1rem;
-            font-weight: 700;
-            color: #1e293b;
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .feature-item {
-            font-size: 0.9rem;
-            color: #475569;
-            margin: 8px 0;
-            padding-left: 24px;
-            position: relative;
-        }
-        
-        .feature-item::before {
-            content: '✓';
-            position: absolute;
-            left: 0;
-            color: #10b981;
-            font-weight: 800;
-            font-size: 1.1rem;
-        }
-        
-        /* Mobile Responsive */
-        @media (max-width: 768px) {
-            .login-container {
-                margin: 20px;
-                max-width: 100%;
-            }
-            
-            .login-title {
-                font-size: 1.8rem;
-            }
-            
-            .login-icon {
-                font-size: 60px;
-            }
-            
-            .login-body {
-                padding: 30px 25px;
-            }
-        }
-        </style>
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap');
+    * { font-family: 'DM Sans', sans-serif !important; }
+    [data-testid="stAppViewContainer"] {
+        background: #0f2044 !important;
+    }
+    .login-wrap {
+        max-width: 420px;
+        margin: 60px auto 0 auto;
+        background: white;
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 24px 64px rgba(0,0,0,0.4);
+    }
+    .login-top {
+        background: #0f2044;
+        padding: 32px 28px 24px 28px;
+        text-align: center;
+        border-bottom: 3px solid #f97316;
+    }
+    .login-logo {
+        width: 56px; height: 56px;
+        background: #f97316;
+        border-radius: 14px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 28px;
+        margin-bottom: 14px;
+    }
+    .login-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: white;
+        margin: 0 0 4px 0;
+    }
+    .login-sub {
+        font-size: 0.82rem;
+        color: #6b8aaa;
+        margin: 0;
+    }
+    .login-body {
+        padding: 28px 28px 24px 28px;
+    }
+    .login-label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: #475569;
+        margin-bottom: 6px;
+        display: block;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .stTextInput > div > div > input {
+        border: 1.5px solid #d1d9e6 !important;
+        border-radius: 8px !important;
+        background: #f8fafc !important;
+        color: #0f2044 !important;
+        padding: 10px 14px !important;
+        font-size: 0.9rem !important;
+    }
+    .stTextInput > div > div > input:focus {
+        border-color: #f97316 !important;
+        box-shadow: 0 0 0 3px rgba(249,115,22,0.15) !important;
+    }
+    .stButton > button {
+        background: #f97316 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 10px 20px !important;
+        font-weight: 600 !important;
+        font-size: 0.9rem !important;
+        width: 100% !important;
+        box-shadow: none !important;
+        transition: background 0.2s !important;
+    }
+    .stButton > button:hover {
+        background: #ea6c0a !important;
+        transform: none !important;
+    }
+    .feat-item {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 0.82rem; color: #64748b;
+        padding: 4px 0;
+    }
+    .feat-dot { width: 6px; height: 6px; background: #f97316; border-radius: 50%; flex-shrink: 0; }
+    .login-footer {
+        text-align: center; padding: 0 28px 24px 28px;
+        font-size: 0.75rem; color: #94a3b8;
+    }
+    </style>
     """, unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([1, 2.5, 1])
-    
+
+    col1, col2, col3 = st.columns([1, 2.2, 1])
     with col2:
-        st.markdown('<div class="login-container">', unsafe_allow_html=True)
-        
-        # Header Section
-        st.markdown('''
-        <div class="login-header">
-            <div class="login-icon">🎯</div>
-            <h1 class="login-title">Lead Scoring Pro</h1>
-            <p class="login-subtitle">AI-Powered Lead Intelligence Platform</p>
-        </div>
-        ''', unsafe_allow_html=True)
-        
-        # Body Section
-        st.markdown('<div class="login-body">', unsafe_allow_html=True)
-        
-        st.markdown('<label class="input-label">👤 Username</label>', unsafe_allow_html=True)
-        username = st.text_input("", key="login_username", placeholder="Enter your username", label_visibility="collapsed")
-        
-        st.markdown('<label class="input-label" style="margin-top: 20px;">🔒 Password</label>', unsafe_allow_html=True)
-        password = st.text_input("", type="password", key="login_password", placeholder="Enter your password", label_visibility="collapsed")
-        
-        col_btn1, col_btn2 = st.columns(2)
-        
-        with col_btn1:
-            if st.button("🚀 Login", use_container_width=True, type="primary", key="login_btn"):
+        st.markdown("""
+        <div class="login-wrap">
+          <div class="login-top">
+            <div class="login-logo">🎯</div>
+            <h1 class="login-title">LeadScore Pro</h1>
+            <p class="login-sub">AI-Powered Lead Intelligence Platform</p>
+          </div>
+          <div class="login-body">
+        """, unsafe_allow_html=True)
+
+        st.markdown('<label class="login-label">Username</label>', unsafe_allow_html=True)
+        username = st.text_input("", key="login_username", placeholder="Enter username", label_visibility="collapsed")
+        st.markdown('<label class="login-label" style="margin-top:14px;">Password</label>', unsafe_allow_html=True)
+        password = st.text_input("", type="password", key="login_password", placeholder="Enter password", label_visibility="collapsed")
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("Sign In →", use_container_width=True, key="login_btn"):
                 if username and password:
                     user = verify_user(username, password)
                     if user:
                         st.session_state.logged_in = True
                         st.session_state.user = user
                         log_usage(user['id'], 'login')
-                        st.success(f"✅ Welcome back, {username}!")
+                        st.success(f"Welcome, {username}!")
                         time.sleep(1)
                         st.rerun()
                     else:
-                        st.error("❌ Invalid credentials. Please try again.")
+                        st.error("Invalid credentials.")
                 else:
-                    st.warning("⚠️ Please enter both username and password")
-        
-        with col_btn2:
-            if st.button("🔑 Demo Access", use_container_width=True, key="demo_btn"):
-                with st.expander("📌 Demo Credentials", expanded=True):
-                    st.markdown("""
-                        **Admin Account:**
-                        - Username: `admin`
-                        - Password: `admin123`
-                        
-                        **Features:**
-                        - Full system access
-                        - User management
-                        - Analytics dashboard
-                    """)
-        
-        # Features Section
-        st.markdown('''
-        <div class="feature-card">
-            <div class="feature-title">
-                <span>⭐</span>
-                <span>Platform Features</span>
-            </div>
-            <div class="feature-item">AI-powered lead scoring engine</div>
-            <div class="feature-item">Real-time analytics dashboard</div>
-            <div class="feature-item">Advanced user management</div>
-            <div class="feature-item">Export & reporting tools</div>
+                    st.warning("Please fill in both fields.")
+        with col_b:
+            if st.button("Demo Creds", use_container_width=True, key="demo_btn"):
+                with st.expander("Credentials", expanded=True):
+                    st.code("Username: admin\nPassword: admin123")
+
+        st.markdown("""
+          </div>
+          <div style="padding: 0 28px 20px 28px; border-top: 1px solid #f1f5f9; margin-top: 4px;">
+            <p style="font-size:0.75rem; color:#94a3b8; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin: 14px 0 8px 0;">Platform Features</p>
+            <div class="feat-item"><span class="feat-dot"></span>AI-powered scoring engine</div>
+            <div class="feat-item"><span class="feat-dot"></span>Real-time analytics dashboard</div>
+            <div class="feat-item"><span class="feat-dot"></span>User management system</div>
+            <div class="feat-item"><span class="feat-dot"></span>CSV / Excel export tools</div>
+          </div>
         </div>
-        ''', unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)  # Close login-body
-        st.markdown('</div>', unsafe_allow_html=True)  # Close login-container
-        
-        # Footer
-        st.markdown('''
-        <div style="text-align: center; margin-top: 30px; color: white; font-size: 0.9rem; opacity: 0.9;">
-            <p>🔒 Secure & Encrypted | ⚡ Fast & Reliable | 📱 Mobile Responsive</p>
-            <p style="opacity: 0.7; font-size: 0.85rem;">© 2024 Lead Scoring Pro. All rights reserved.</p>
-        </div>
-        ''', unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
+
+        st.markdown('<div class="login-footer">🔒 Secure & Encrypted &nbsp;|&nbsp; LeadScore Pro v2.0 &nbsp;|&nbsp; © 2024</div>', unsafe_allow_html=True)
 
 # ============================================================================
 # INITIALIZE
 # ============================================================================
-
 init_database()
-
-# Initialize session state
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'user' not in st.session_state:
     st.session_state.user = None
 
-# Check login
 if not st.session_state.logged_in:
     show_login_page()
     st.stop()
 
-# ============================================================================
-# MAIN APPLICATION CSS (After Login)
-# ============================================================================
-
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-    
-    /* Global Styles */
-    * {
-        font-family: 'Inter', sans-serif;
-    }
-    
-    /* Main Background */
-    [data-testid="stAppViewContainer"] {
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
-    }
-    
-    .block-container {
-        padding-top: 1rem;
-        padding-bottom: 2rem;
-        max-width: 100%;
-    }
-    
-    /* Glassmorphism Effect */
-    .glass-card {
-        background: rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(10px);
-        border-radius: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        padding: 24px;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-    }
-    
-    /* Header Styles */
-    .main-header {
-        font-size: 3.5rem;
-        font-weight: 900;
-        background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 50%, #ec4899 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-align: center;
-        padding: 2rem 0 0.5rem 0;
-        margin-bottom: 0;
-        letter-spacing: -0.03em;
-        text-shadow: 0 0 80px rgba(96, 165, 250, 0.5);
-    }
-    
-    .sub-header {
-        text-align: center;
-        color: #cbd5e1;
-        font-size: 1.2rem;
-        margin-bottom: 2rem;
-        font-weight: 400;
-        opacity: 0.9;
-    }
-    
-    /* Sidebar Styling */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-        padding: 1rem;
-    }
-    
-    [data-testid="stSidebar"] * {
-        color: white !important;
-    }
-    
-    [data-testid="stSidebar"] .stButton > button {
-        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-        color: white;
-        border: none;
-        border-radius: 12px;
-        padding: 0.75rem 1.5rem;
-        font-weight: 700;
-        font-size: 1rem;
-        box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
-        transition: all 0.3s ease;
-        width: 100%;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    
-    [data-testid="stSidebar"] .stButton > button:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 8px 25px rgba(59, 130, 246, 0.6);
-    }
-    
-    /* User Info Card */
-    .user-info {
-        background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%);
-        padding: 20px;
-        border-radius: 16px;
-        margin-bottom: 24px;
-        border: 2px solid rgba(59, 130, 246, 0.3);
-        backdrop-filter: blur(10px);
-    }
-    
-    .user-info h3 {
-        color: #60a5fa !important;
-        margin: 0 0 12px 0;
-        font-size: 1.3rem;
-        font-weight: 800;
-    }
-    
-    /* Metric Cards */
-    .metric-card {
-        background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
-        padding: 1.5rem;
-        border-radius: 16px;
-        border: 2px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        transition: all 0.3s ease;
-        height: 100%;
-        backdrop-filter: blur(10px);
-    }
-    
-    .metric-card:hover {
-        transform: translateY(-8px) scale(1.02);
-        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
-        border-color: rgba(255, 255, 255, 0.3);
-    }
-    
-    .metric-card-hot {
-        background: linear-gradient(135deg, rgba(239, 68, 68, 0.2) 0%, rgba(220, 38, 38, 0.1) 100%);
-        border-color: #ef4444;
-    }
-    
-    .metric-card-warm {
-        background: linear-gradient(135deg, rgba(245, 158, 11, 0.2) 0%, rgba(217, 119, 6, 0.1) 100%);
-        border-color: #f59e0b;
-    }
-    
-    .metric-card-cold {
-        background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(37, 99, 235, 0.1) 100%);
-        border-color: #3b82f6;
-    }
-    
-    /* Tabs Styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 1rem;
-        background: rgba(255, 255, 255, 0.05);
-        padding: 0.5rem;
-        border-radius: 16px;
-        backdrop-filter: blur(10px);
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background: transparent;
-        border-radius: 12px;
-        padding: 1rem 2rem;
-        font-weight: 700;
-        color: #94a3b8;
-        border: none;
-        transition: all 0.3s ease;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        font-size: 0.9rem;
-    }
-    
-    .stTabs [data-baseweb="tab"]:hover {
-        background: rgba(255, 255, 255, 0.1);
-        color: #e2e8f0;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-        color: white !important;
-        box-shadow: 0 4px 20px rgba(59, 130, 246, 0.4);
-    }
-    
-    /* Buttons */
-    .stButton > button {
-        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-        color: white;
-        border: none;
-        border-radius: 12px;
-        padding: 0.75rem 1.5rem;
-        font-weight: 700;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        font-size: 0.95rem;
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(59, 130, 246, 0.5);
-    }
-    
-    /* Download Buttons */
-    .stDownloadButton > button {
-        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-        color: white;
-        border: none;
-        border-radius: 12px;
-        padding: 0.75rem 1.5rem;
-        font-weight: 700;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
-    }
-    
-    .stDownloadButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(16, 185, 129, 0.5);
-    }
-    
-    /* DataFrames */
-    [data-testid="stDataFrame"] {
-        border-radius: 16px;
-        overflow: hidden;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    
-    .dataframe {
-        border: none !important;
-        background: rgba(255, 255, 255, 0.05) !important;
-    }
-    
-    .dataframe thead tr th {
-        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%) !important;
-        color: white !important;
-        font-weight: 700 !important;
-        padding: 16px !important;
-        text-transform: uppercase;
-        font-size: 0.85rem;
-        letter-spacing: 1px;
-        border: none !important;
-    }
-    
-    .dataframe tbody tr {
-        background: rgba(255, 255, 255, 0.02) !important;
-        transition: all 0.2s ease;
-    }
-    
-    .dataframe tbody tr:hover {
-        background: rgba(255, 255, 255, 0.08) !important;
-        transform: scale(1.005);
-    }
-    
-    .dataframe tbody td {
-        color: #e2e8f0 !important;
-        padding: 12px !important;
-        border-color: rgba(255, 255, 255, 0.05) !important;
-    }
-    
-    /* Progress Bar */
-    .stProgress > div > div > div > div {
-        background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%);
-        border-radius: 10px;
-    }
-    
-    /* Expanders */
-    .streamlit-expanderHeader {
-        background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
-        border-radius: 12px;
-        border: 2px solid rgba(255, 255, 255, 0.1);
-        font-weight: 700;
-        color: #e2e8f0;
-        padding: 1rem;
-        backdrop-filter: blur(10px);
-    }
-    
-    .streamlit-expanderHeader:hover {
-        border-color: #3b82f6;
-        background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(139, 92, 246, 0.1) 100%);
-    }
-    
-    /* Section Headers */
-    h3 {
-        color: #e2e8f0 !important;
-        font-weight: 800 !important;
-        margin-top: 2rem;
-        margin-bottom: 1rem;
-        border-bottom: 3px solid #3b82f6;
-        padding-bottom: 0.5rem;
-        display: inline-block;
-        letter-spacing: -0.5px;
-    }
-    
-    /* Metric Values */
-    [data-testid="stMetricValue"] {
-        font-size: 2.5rem;
-        font-weight: 900;
-        color: #e2e8f0;
-    }
-    
-    [data-testid="stMetricLabel"] {
-        font-size: 0.9rem;
-        color: #94a3b8;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    
-    /* Info/Success/Warning Boxes */
-    .stAlert {
-        border-radius: 12px;
-        border-left: 4px solid;
-        padding: 1rem 1.5rem;
-        font-weight: 500;
-        backdrop-filter: blur(10px);
-        background: rgba(255, 255, 255, 0.05);
-    }
-    
-    /* Inputs */
-    .stTextInput > div > div > input,
-    .stSelectbox > div > div > select,
-    .stNumberInput > div > div > input {
-        border-radius: 10px;
-        border: 2px solid rgba(255, 255, 255, 0.1);
-        background: rgba(255, 255, 255, 0.05);
-        color: #e2e8f0;
-        padding: 0.75rem;
-        transition: all 0.3s ease;
-        backdrop-filter: blur(10px);
-    }
-    
-    .stTextInput > div > div > input:focus,
-    .stSelectbox > div > div > select:focus,
-    .stNumberInput > div > div > input:focus {
-        border-color: #3b82f6;
-        background: rgba(255, 255, 255, 0.08);
-        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
-    }
-    
-    /* Slider */
-    .stSlider > div > div > div {
-        background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%);
-    }
-    
-    /* Activity Card */
-    .activity-card {
-        background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.04) 100%);
-        padding: 16px;
-        border-radius: 12px;
-        margin: 10px 0;
-        border-left: 4px solid #3b82f6;
-        backdrop-filter: blur(10px);
-        transition: all 0.3s ease;
-    }
-    
-    .activity-card:hover {
-        transform: translateX(5px);
-        border-left-color: #8b5cf6;
-        box-shadow: 0 4px 20px rgba(59, 130, 246, 0.3);
-    }
-    
-    /* Online Indicator */
-    .online-indicator {
-        display: inline-block;
-        width: 10px;
-        height: 10px;
-        background: #10b981;
-        border-radius: 50%;
-        margin-right: 8px;
-        animation: pulse-green 2s infinite;
-        box-shadow: 0 0 10px #10b981;
-    }
-    
-    @keyframes pulse-green {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.6; transform: scale(1.1); }
-    }
-    
-    /* Divider */
-    hr {
-        margin: 2rem 0;
-        border: none;
-        height: 2px;
-        background: linear-gradient(90deg, transparent, #3b82f6, transparent);
-    }
-    
-    /* Mobile Responsive */
-    @media (max-width: 768px) {
-        .main-header {
-            font-size: 2rem;
-        }
-        
-        .sub-header {
-            font-size: 1rem;
-        }
-        
-        .stTabs [data-baseweb="tab"] {
-            padding: 0.75rem 1rem;
-            font-size: 0.8rem;
-        }
-    }
-</style>
-""", unsafe_allow_html=True)
+# Inject main theme
+st.markdown(THEME_CSS, unsafe_allow_html=True)
 
 # ============================================================================
-# SIDEBAR (Common for both Admin & User)
+# SIDEBAR (Navy theme)
 # ============================================================================
-
 with st.sidebar:
     user_stats = get_user_stats(st.session_state.user['id'])
-    
+    uname = st.session_state.user['username']
+    role = st.session_state.user['role']
+    initials = uname[:2].upper()
+
     st.markdown(f"""
-    <div class='user-info'>
-        <h3>👤 {st.session_state.user['username']}</h3>
-        <p style='margin: 8px 0; opacity: 0.9;'>Role: <b style='color: #60a5fa;'>{st.session_state.user['role'].upper()}</b></p>
-        <hr style='margin: 12px 0; opacity: 0.3;'>
-        <p style='margin: 6px 0;'>📊 Scorings: <b>{user_stats['total_scorings']}</b></p>
-        <p style='margin: 6px 0;'>📄 Leads: <b>{user_stats['total_leads']:,}</b></p>
-        <p style='margin: 6px 0;'>🔑 Logins: <b>{user_stats['total_logins']}</b></p>
+    <div class="sidebar-profile">
+        <div class="sidebar-avatar">{initials}</div>
+        <div class="sidebar-name">{uname}</div>
+        <div class="sidebar-role">{role}</div>
     </div>
     """, unsafe_allow_html=True)
-    
-    if st.button("🚪 LOGOUT", use_container_width=True):
+
+    st.markdown("### Navigation")
+    st.markdown("""
+    <div class="nav-item active"><span class="nav-icon">🏠</span> Home</div>
+    <div class="nav-item"><span class="nav-icon">📊</span> Dashboard</div>
+    <div class="nav-item"><span class="nav-icon">🔥</span> Hot Leads</div>
+    <div class="nav-item"><span class="nav-icon">📈</span> Analytics</div>
+    <div class="nav-item"><span class="nav-icon">💾</span> Export</div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### Data Source")
+    upload_option = st.radio("Select:", ["Default Dataset", "Upload Custom File"], label_visibility="collapsed")
+    if upload_option == "Upload Custom File":
+        uploaded_file = st.file_uploader("Upload Excel", type=['xlsx', 'xls'])
+        data_path = uploaded_file
+    else:
+        data_path = "5000_rental_crm_leads.xlsx"
+
+    st.markdown("---")
+    train_button = st.button("▶  Train & Score", use_container_width=True)
+    st.markdown("---")
+
+    st.markdown("### Your Stats")
+    st.markdown(f"""
+    <div style="padding: 0 4px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1e3660;">
+            <span style="font-size:0.8rem;color:#9ab0cc;">Scorings</span>
+            <span class="stat-pill">{user_stats['total_scorings']}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1e3660;">
+            <span style="font-size:0.8rem;color:#9ab0cc;">Leads Scored</span>
+            <span class="stat-pill">{user_stats['total_leads']:,}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;">
+            <span style="font-size:0.8rem;color:#9ab0cc;">Logins</span>
+            <span class="stat-pill">{user_stats['total_logins']}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    if st.button("⏏  Logout", use_container_width=True, key="logout_btn"):
         logout_user(st.session_state.user['id'])
         log_usage(st.session_state.user['id'], 'logout')
         st.session_state.logged_in = False
         st.session_state.user = None
         st.rerun()
-    
-    st.markdown("---")
-    
-    # Stats Summary
-    st.markdown("### 📊 Your Performance")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"""
-        <div style='background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%); 
-                    padding: 16px; border-radius: 12px; text-align: center; border: 2px solid rgba(59, 130, 246, 0.3);'>
-            <div style='font-size: 0.8rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;'>Scorings</div>
-            <div style='font-size: 2rem; font-weight: 900; color: #60a5fa; margin: 4px 0;'>{user_stats['total_scorings']}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"""
-        <div style='background: linear-gradient(135deg, rgba(139, 92, 246, 0.2) 0%, rgba(236, 72, 153, 0.2) 100%); 
-                    padding: 16px; border-radius: 12px; text-align: center; border: 2px solid rgba(139, 92, 246, 0.3);'>
-            <div style='font-size: 0.8rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;'>Total Leads</div>
-            <div style='font-size: 2rem; font-weight: 900; color: #a78bfa; margin: 4px 0;'>{user_stats['total_leads']:,}</div>
-        </div>
-        """, unsafe_allow_html=True)
 
 # ============================================================================
 # ADMIN DASHBOARD
 # ============================================================================
-
 if st.session_state.user['role'] == 'admin':
-    
-    st.markdown('<div class="main-header">👑 ADMIN COMMAND CENTER</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Complete System Management & Lead Scoring Analytics</div>', unsafe_allow_html=True)
-    
-    # System Stats
+
+    # Top bar
     sys_stats = get_system_stats()
-    
+    st.markdown(f"""
+    <div class="page-topbar">
+        <div>
+            <p class="page-topbar-title">Admin Command Center</p>
+            <p class="page-topbar-sub">{datetime.now().strftime("%A, %B %d %Y")} &nbsp;·&nbsp; Logged in as <b>{uname}</b></p>
+        </div>
+        <span class="topbar-badge">ADMIN</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # System stat cards
     col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.metric("👥 Total Users", sys_stats['total_users'], help="Active user accounts")
-    with col2:
-        st.metric("🟢 Online Now", sys_stats['currently_online'], help="Currently logged in")
-    with col3:
-        st.metric("📊 Total Scorings", sys_stats['total_scorings'], help="All-time scorings")
-    with col4:
-        st.metric("📄 Total Leads", f"{sys_stats['total_leads']:,}", help="All leads scored")
-    with col5:
-        st.metric("🕒 Today Logins", sys_stats['today_logins'], help="Logins today")
-    
-    st.markdown("---")
-    
-    # Main Admin Tabs
-    admin_main_tab1, admin_main_tab2 = st.tabs([
-        "🎯 LEAD SCORING DASHBOARD",
-        "👑 USER MANAGEMENT"
-    ])
-    
-    # ========================================================================
-    # ADMIN TAB 1: LEAD SCORING DASHBOARD
-    # ========================================================================
-    
-    with admin_main_tab1:
-        st.markdown("## 🚀 AI Lead Scoring Engine")
-        
-        # Sidebar for data source
-        with st.sidebar:
-            st.markdown("---")
-            st.markdown("### 📂 Data Source")
-            
-            upload_option = st.radio(
-                "Select Source:",
-                ["Use Default Dataset", "Upload Custom File"],
-                help="Choose your data source"
-            )
-            
-            if upload_option == "Upload Custom File":
-                uploaded_file = st.file_uploader(
-                    "Upload Excel File",
-                    type=['xlsx', 'xls'],
-                    help="Upload CRM leads file"
-                )
-                data_path = uploaded_file
-            else:
-                data_path = "5000_rental_crm_leads.xlsx"
-            
-            st.markdown("---")
-            
-            train_button = st.button(
-                "🚀 TRAIN & SCORE",
-                type="primary",
-                use_container_width=True
-            )
-        
-        # Main content
+    cards = [
+        (col1, "👥", sys_stats['total_users'], "Total Users", "#3b82f6"),
+        (col2, "🟢", sys_stats['currently_online'], "Online Now", "#10b981"),
+        (col3, "📊", sys_stats['total_scorings'], "Scorings", "#f97316"),
+        (col4, "📄", f"{sys_stats['total_leads']:,}", "Total Leads", "#8b5cf6"),
+        (col5, "🕒", sys_stats['today_logins'], "Today Logins", "#ec4899"),
+    ]
+    for col, icon, val, label, accent in cards:
+        with col:
+            st.markdown(f"""
+            <div class="stat-card">
+                <div class="stat-card-accent" style="background:{accent};"></div>
+                <div class="stat-card-icon" style="background:{accent}18;">{icon}</div>
+                <div class="stat-card-value">{val}</div>
+                <div class="stat-card-label">{label}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    admin_tab1, admin_tab2 = st.tabs(["🎯 Lead Scoring", "👑 User Management"])
+
+    # ── Admin Lead Scoring Tab ──
+    with admin_tab1:
         if train_button and data_path:
-            with st.spinner("🔄 Loading data..."):
+            with st.spinner("Loading data..."):
                 df = load_data(data_path)
-            
             if df is not None:
-                with st.expander("📊 Dataset Preview", expanded=False):
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("📝 Rows", f"{len(df):,}")
-                    with col2:
-                        st.metric("📋 Columns", len(df.columns))
-                    with col3:
-                        st.metric("❓ Missing", df.isnull().sum().sum())
-                    with col4:
-                        memory = df.memory_usage(deep=True).sum() / 1024**2
-                        st.metric("💾 Memory", f"{memory:.2f} MB")
-                    
+                with st.expander("Dataset Preview", expanded=False):
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Rows", f"{len(df):,}")
+                    c2.metric("Columns", len(df.columns))
+                    c3.metric("Missing", df.isnull().sum().sum())
+                    c4.metric("Memory", f"{df.memory_usage(deep=True).sum()/1024**2:.2f} MB")
                     st.dataframe(df.head(10), use_container_width=True)
-                
                 try:
                     model, scored_df, features, accuracy, roc_auc = train_model(df)
-                    
-                    st.session_state['model'] = model
-                    st.session_state['scored_df'] = scored_df
-                    st.session_state['features'] = features
-                    st.session_state['accuracy'] = accuracy
-                    st.session_state['roc_auc'] = roc_auc
-                    
+                    st.session_state.update({'model': model, 'scored_df': scored_df,
+                                             'features': features, 'accuracy': accuracy, 'roc_auc': roc_auc})
                     log_usage(st.session_state.user['id'], 'score_leads', 'Admin scoring', len(scored_df))
-                    
-                    st.success("✅ Model trained successfully!")
+                    st.success("Model trained & leads scored!")
                     st.balloons()
-                    
                 except Exception as e:
-                    st.error(f"❌ Error: {e}")
-        
-        # Display results
+                    st.error(f"Error: {e}")
+
         if 'scored_df' in st.session_state:
             df = st.session_state['scored_df']
             accuracy = st.session_state.get('accuracy', 0)
             roc_auc = st.session_state.get('roc_auc', None)
-            
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "📊 DASHBOARD",
-                "🔥 PRIORITY LEADS",
-                "📈 ANALYTICS",
-                "📋 ALL LEADS",
-                "💾 EXPORT"
-            ])
-            
-            with tab1:
-                st.markdown("### 📊 Performance Dashboard")
-                st.markdown("")
-                
-                col1, col2, col3, col4, col5 = st.columns(5)
-                
-                with col1:
-                    st.metric("📊 Total", f"{len(df):,}")
-                with col2:
-                    hot = len(df[df['lead_category'] == 'Hot'])
-                    st.markdown(f"""
-                        <div class="metric-card metric-card-hot">
-                            <div style="font-size: 0.9rem; color: #fca5a5; font-weight: 700; text-transform: uppercase;">🔥 HOT</div>
-                            <div style="font-size: 2.5rem; font-weight: 900; color: #ef4444; margin: 0.5rem 0;">{hot}</div>
-                            <div style="font-size: 0.85rem; color: #fca5a5;">{hot/len(df)*100:.1f}%</div>
+
+            t1, t2, t3, t4, t5 = st.tabs(["📊 Dashboard", "🔥 Priority Leads", "📈 Analytics", "📋 All Leads", "💾 Export"])
+
+            with t1:
+                hot = len(df[df['lead_category'] == 'Hot'])
+                warm = len(df[df['lead_category'] == 'Warm'])
+                cold = len(df[df['lead_category'] == 'Cold'])
+                total = len(df)
+
+                st.markdown('<div class="section-card"><p class="section-card-title">Lead Summary</p><p class="section-card-sub">Current scoring results</p>', unsafe_allow_html=True)
+                c1, c2, c3, c4, c5 = st.columns(5)
+                summary_cards = [
+                    (c1, "📊", total, "Total Leads", "#0f2044"),
+                    (c2, "🔥", hot, f"Hot ({hot/total*100:.0f}%)", "#dc2626"),
+                    (c3, "🌡️", warm, f"Warm ({warm/total*100:.0f}%)", "#ea580c"),
+                    (c4, "❄️", cold, f"Cold ({cold/total*100:.0f}%)", "#2563eb"),
+                    (c5, "⭐", f"{df['lead_score'].mean():.1f}", "Avg Score", "#7c3aed"),
+                ]
+                for col, icon, val, label, accent in summary_cards:
+                    with col:
+                        st.markdown(f"""
+                        <div class="stat-card">
+                            <div class="stat-card-accent" style="background:{accent};"></div>
+                            <div class="stat-card-icon" style="background:{accent}18;">{icon}</div>
+                            <div class="stat-card-value">{val}</div>
+                            <div class="stat-card-label">{label}</div>
                         </div>
-                    """, unsafe_allow_html=True)
-                with col3:
-                    warm = len(df[df['lead_category'] == 'Warm'])
-                    st.markdown(f"""
-                        <div class="metric-card metric-card-warm">
-                            <div style="font-size: 0.9rem; color: #fcd34d; font-weight: 700; text-transform: uppercase;">🌡️ WARM</div>
-                            <div style="font-size: 2.5rem; font-weight: 900; color: #f59e0b; margin: 0.5rem 0;">{warm}</div>
-                            <div style="font-size: 0.85rem; color: #fcd34d;">{warm/len(df)*100:.1f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                with col4:
-                    cold = len(df[df['lead_category'] == 'Cold'])
-                    st.markdown(f"""
-                        <div class="metric-card metric-card-cold">
-                            <div style="font-size: 0.9rem; color: #93c5fd; font-weight: 700; text-transform: uppercase;">❄️ COLD</div>
-                            <div style="font-size: 2.5rem; font-weight: 900; color: #3b82f6; margin: 0.5rem 0;">{cold}</div>
-                            <div style="font-size: 0.85rem; color: #93c5fd;">{cold/len(df)*100:.1f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                with col5:
-                    st.metric("⭐ Avg Score", f"{df['lead_score'].mean():.1f}")
-                
-                st.markdown("")
-                st.markdown("---")
-                
-                st.markdown("### 🎯 Model Performance")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    gauge = create_gauge_chart(accuracy*100, "Accuracy", "#3b82f6")
-                    st.plotly_chart(gauge, use_container_width=True)
-                
-                with col2:
-                    if roc_auc:
-                        gauge = create_gauge_chart(roc_auc*100, "ROC AUC", "#8b5cf6")
-                        st.plotly_chart(gauge, use_container_width=True)
-                    else:
-                        st.info("ROC AUC not available")
-                
-                with col3:
-                    conversion = (df['lead_score'] > 70).sum() / len(df) * 100
-                    gauge = create_gauge_chart(conversion, "Hot %", "#10b981")
-                    st.plotly_chart(gauge, use_container_width=True)
-                
-                st.markdown("---")
-                
-                st.markdown("### 📊 Distribution Analysis")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    category_counts = df['lead_category'].value_counts()
+                        """, unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                col_l, col_r = st.columns(2)
+                with col_l:
+                    st.markdown('<div class="section-card"><p class="section-card-title">Model Performance</p>', unsafe_allow_html=True)
+                    g1, g2, g3 = st.columns(3)
+                    with g1:
+                        fig = create_donut_chart(accuracy*100, "Accuracy", "#0f2044", "#f0f4f8")
+                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                    with g2:
+                        if roc_auc:
+                            fig = create_donut_chart(roc_auc*100, "ROC AUC", "#f97316", "#fff7ed")
+                            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                    with g3:
+                        conv = hot/total*100
+                        fig = create_donut_chart(conv, "Hot %", "#dc2626", "#fee2e2")
+                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                with col_r:
+                    st.markdown('<div class="section-card"><p class="section-card-title">Category Breakdown</p>', unsafe_allow_html=True)
+                    cat_counts = df['lead_category'].value_counts()
                     fig_pie = go.Figure(data=[go.Pie(
-                        labels=category_counts.index,
-                        values=category_counts.values,
-                        hole=0.4,
-                        marker=dict(colors=['#ef4444', '#f59e0b', '#3b82f6']),
+                        labels=cat_counts.index, values=cat_counts.values, hole=0.55,
+                        marker=dict(colors=['#dc2626', '#ea580c', '#2563eb']),
                         textinfo='label+percent',
-                        textfont=dict(size=14, family='Inter', color='white')
+                        textfont=dict(size=12, family='DM Sans'),
+                        showlegend=False
                     )])
-                    fig_pie.update_layout(
-                        title="Lead Categories",
-                        height=400,
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        font={'family': 'Inter', 'color': '#e2e8f0'}
-                    )
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                
-                with col2:
-                    fig_hist = go.Figure()
-                    fig_hist.add_trace(go.Histogram(
-                        x=df['lead_score'],
-                        nbinsx=20,
-                        marker=dict(
-                            color=df['lead_score'],
-                            colorscale='Viridis'
-                        )
-                    ))
-                    fig_hist.update_layout(
-                        title="Score Distribution",
-                        xaxis_title="Lead Score",
-                        yaxis_title="Count",
-                        height=400,
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        font={'family': 'Inter', 'color': '#e2e8f0'}
-                    )
-                    st.plotly_chart(fig_hist, use_container_width=True)
-            
-            with tab2:
-                st.markdown("### 🔥 Top Priority Leads")
-                
-                col1, col2, col3 = st.columns([2, 2, 1])
-                with col1:
-                    category_filter = st.multiselect(
-                        "Filter by Category",
-                        ['Hot', 'Warm', 'Cold'],
-                        default=['Hot']
-                    )
-                with col2:
-                    min_score = st.slider("Minimum Score", 0, 100, 70)
-                with col3:
-                    show_count = st.number_input("Show Top", 10, 100, 20, 10)
-                
-                filtered = df[
-                    (df['lead_category'].isin(category_filter)) & 
-                    (df['lead_score'] >= min_score)
-                ]
-                
+                    fig_pie.update_layout(height=220, margin=dict(l=0,r=0,t=10,b=10),
+                                          paper_bgcolor='rgba(0,0,0,0)', font={'family': 'DM Sans', 'color': '#0f2044'})
+                    st.plotly_chart(fig_pie, use_container_width=True, config={'displayModeBar': False})
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                st.markdown('<div class="section-card"><p class="section-card-title">Score Distribution</p><p class="section-card-sub">Number of leads at each score range</p>', unsafe_allow_html=True)
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Histogram(x=df['lead_score'], nbinsx=20,
+                                                 marker=dict(color='#0f2044', opacity=0.85)))
+                fig_hist.update_layout(height=220, margin=dict(l=0,r=0,t=10,b=10),
+                                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                                        xaxis=dict(title='Score', color='#64748b', gridcolor='#f1f5f9'),
+                                        yaxis=dict(title='Count', color='#64748b', gridcolor='#f1f5f9'),
+                                        font={'family': 'DM Sans', 'color': '#0f2044'})
+                st.plotly_chart(fig_hist, use_container_width=True, config={'displayModeBar': False})
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            with t2:
+                st.markdown('<div class="section-card"><p class="section-card-title">Priority Leads</p><p class="section-card-sub">Filter and view your best leads</p>', unsafe_allow_html=True)
+                c1, c2, c3 = st.columns([2, 2, 1])
+                with c1:
+                    cat_filter = st.multiselect("Category", ['Hot', 'Warm', 'Cold'], default=['Hot'])
+                with c2:
+                    min_score = st.slider("Min Score", 0, 100, 70)
+                with c3:
+                    show_n = st.number_input("Show Top", 10, 100, 20, 10)
+                filtered = df[(df['lead_category'].isin(cat_filter)) & (df['lead_score'] >= min_score)]
                 display_cols = ['lead_id', 'name', 'lead_score', 'lead_category']
-                optional_cols = ['source', 'budget_mid', 'preferred_area', 'total_interactions']
-                available = [c for c in optional_cols if c in filtered.columns]
-                
-                if available:
-                    selected = st.multiselect("Additional Columns", available, available[:2] if len(available) >= 2 else available)
-                    display_cols.extend(selected)
-                
-                top_leads = filtered.nlargest(show_count, 'lead_score')[display_cols]
-                
-                def highlight_category(row):
-                    if row['lead_category'] == 'Hot':
-                        return ['background-color: rgba(239, 68, 68, 0.2)'] * len(row)
-                    elif row['lead_category'] == 'Warm':
-                        return ['background-color: rgba(245, 158, 11, 0.2)'] * len(row)
-                    else:
-                        return ['background-color: rgba(59, 130, 246, 0.2)'] * len(row)
-                
-                st.dataframe(top_leads.style.apply(highlight_category, axis=1), use_container_width=True, height=600)
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("🎯 Filtered", len(filtered))
-                with col2:
-                    st.metric("📊 Avg", f"{filtered['lead_score'].mean():.1f}")
-                with col3:
-                    st.metric("📈 Max", filtered['lead_score'].max())
-            
-            with tab3:
-                st.markdown("### 📈 Advanced Analytics")
-                
+                opt = [c for c in ['source', 'budget_mid', 'preferred_area', 'total_interactions'] if c in filtered.columns]
+                if opt:
+                    sel = st.multiselect("Extra Columns", opt, opt[:2])
+                    display_cols += sel
+                top = filtered.nlargest(show_n, 'lead_score')[display_cols]
+                st.dataframe(top, use_container_width=True, height=500)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Filtered", len(filtered))
+                c2.metric("Avg Score", f"{filtered['lead_score'].mean():.1f}" if len(filtered) else "—")
+                c3.metric("Max Score", filtered['lead_score'].max() if len(filtered) else "—")
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            with t3:
+                st.markdown('<div class="section-card"><p class="section-card-title">Analytics</p>', unsafe_allow_html=True)
                 if 'source' in df.columns:
-                    st.markdown("#### Performance by Source")
-                    source_stats = df.groupby('source').agg({
-                        'lead_score': ['mean', 'count'],
-                        'lead_category': lambda x: (x == 'Hot').sum()
-                    }).round(2)
-                    source_stats.columns = ['Avg Score', 'Count', 'Hot Leads']
-                    source_stats = source_stats.sort_values('Avg Score', ascending=False)
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.dataframe(source_stats, use_container_width=True)
-                    with col2:
+                    src = df.groupby('source').agg({'lead_score': ['mean', 'count'],
+                                                     'lead_category': lambda x: (x=='Hot').sum()}).round(2)
+                    src.columns = ['Avg Score', 'Count', 'Hot Leads']
+                    src = src.sort_values('Avg Score', ascending=False)
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.dataframe(src, use_container_width=True)
+                    with c2:
                         fig_bar = go.Figure()
-                        fig_bar.add_trace(go.Bar(
-                            x=source_stats.index,
-                            y=source_stats['Avg Score'],
-                            marker=dict(
-                                color=source_stats['Avg Score'],
-                                colorscale='Viridis'
-                            ),
-                            text=source_stats['Avg Score'].round(1),
-                            textposition='outside'
-                        ))
-                        fig_bar.update_layout(
-                            title="Avg Score by Source",
-                            height=400,
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            font={'family': 'Inter', 'color': '#e2e8f0'}
-                        )
-                        st.plotly_chart(fig_bar, use_container_width=True)
-                
+                        fig_bar.add_trace(go.Bar(x=src.index, y=src['Avg Score'],
+                                                  marker=dict(color='#0f2044', opacity=0.85),
+                                                  text=src['Avg Score'].round(1), textposition='outside'))
+                        fig_bar.update_layout(title="Avg Score by Source", height=320,
+                                               paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                                               font={'family': 'DM Sans', 'color': '#0f2044'},
+                                               xaxis=dict(color='#64748b'), yaxis=dict(color='#64748b', gridcolor='#f1f5f9'))
+                        st.plotly_chart(fig_bar, use_container_width=True, config={'displayModeBar': False})
                 if 'budget_mid' in df.columns:
-                    st.markdown("#### Score vs Budget")
-                    fig_scatter = px.scatter(
-                        df.dropna(subset=['budget_mid']),
-                        x='budget_mid',
-                        y='lead_score',
-                        color='lead_category',
-                        size='total_interactions' if 'total_interactions' in df.columns else None,
-                        color_discrete_map={'Hot': '#ef4444', 'Warm': '#f59e0b', 'Cold': '#3b82f6'}
-                    )
-                    fig_scatter.update_layout(
-                        height=500,
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        font={'family': 'Inter', 'color': '#e2e8f0'}
-                    )
-                    st.plotly_chart(fig_scatter, use_container_width=True)
-            
-            with tab4:
-                st.markdown("### 📋 Complete Database")
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    search = st.text_input("🔍 Search", placeholder="Name or ID")
-                with col2:
-                    score_range = st.slider("Score Range", 0, 100, (0, 100))
-                with col3:
-                    sort_by = st.selectbox("Sort by", ['lead_score', 'lead_id', 'name'])
-                with col4:
-                    sort_order = st.radio("Order", ['Desc', 'Asc'])
-                
-                filtered = df.copy()
+                    fig_sc = px.scatter(df.dropna(subset=['budget_mid']), x='budget_mid', y='lead_score',
+                                        color='lead_category',
+                                        color_discrete_map={'Hot': '#dc2626', 'Warm': '#ea580c', 'Cold': '#2563eb'},
+                                        size='total_interactions' if 'total_interactions' in df.columns else None)
+                    fig_sc.update_layout(height=380, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                                          font={'family': 'DM Sans', 'color': '#0f2044'},
+                                          xaxis=dict(color='#64748b', gridcolor='#f1f5f9'),
+                                          yaxis=dict(color='#64748b', gridcolor='#f1f5f9'))
+                    st.plotly_chart(fig_sc, use_container_width=True, config={'displayModeBar': False})
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            with t4:
+                st.markdown('<div class="section-card"><p class="section-card-title">All Leads</p>', unsafe_allow_html=True)
+                c1, c2, c3, c4 = st.columns(4)
+                with c1: search = st.text_input("Search", placeholder="Name or ID")
+                with c2: score_rng = st.slider("Score Range", 0, 100, (0, 100))
+                with c3: sort_col = st.selectbox("Sort", ['lead_score', 'lead_id', 'name'])
+                with c4: sort_ord = st.radio("Order", ['Desc', 'Asc'])
+                fdf = df.copy()
                 if search:
-                    filtered = filtered[
-                        filtered['name'].str.contains(search, case=False, na=False) |
-                        filtered['lead_id'].astype(str).str.contains(search, case=False)
-                    ]
-                filtered = filtered[
-                    (filtered['lead_score'] >= score_range[0]) &
-                    (filtered['lead_score'] <= score_range[1])
-                ]
-                filtered = filtered.sort_values(sort_by, ascending=(sort_order == 'Asc'))
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.info(f"📊 **{len(filtered):,}** of **{len(df):,}** leads")
-                with col2:
-                    if len(filtered) > 0:
-                        st.success(f"⭐ Avg: **{filtered['lead_score'].mean():.1f}**")
-                with col3:
-                    if len(filtered) > 0:
-                        hot_pct = (filtered['lead_category'] == 'Hot').sum() / len(filtered) * 100
-                        st.warning(f"🔥 Hot: **{hot_pct:.1f}%**")
-                
-                st.dataframe(filtered, use_container_width=True, height=600)
-            
-            with tab5:
-                st.markdown("### 💾 Export Data")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    csv = df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        "📄 Download CSV",
-                        csv,
-                        'scored_leads.csv',
-                        'text/csv',
-                        use_container_width=True
-                    )
-                
-                with col2:
+                    fdf = fdf[fdf['name'].str.contains(search, case=False, na=False) |
+                              fdf['lead_id'].astype(str).str.contains(search, case=False)]
+                fdf = fdf[(fdf['lead_score'] >= score_rng[0]) & (fdf['lead_score'] <= score_rng[1])]
+                fdf = fdf.sort_values(sort_col, ascending=(sort_ord == 'Asc'))
+                st.info(f"{len(fdf):,} of {len(df):,} leads shown")
+                st.dataframe(fdf, use_container_width=True, height=500)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            with t5:
+                st.markdown('<div class="section-card"><p class="section-card-title">Export</p><p class="section-card-sub">Download your scored leads</p>', unsafe_allow_html=True)
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.download_button("📄 Download CSV", df.to_csv(index=False).encode('utf-8'),
+                                       'scored_leads.csv', 'text/csv', use_container_width=True)
+                with c2:
                     @st.cache_data
-                    def to_excel(dataframe):
-                        output = BytesIO()
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            dataframe.to_excel(writer, index=False, sheet_name='Scored Leads')
-                        return output.getvalue()
-                    
-                    excel = to_excel(df)
-                    st.download_button(
-                        "📊 Download Excel",
-                        excel,
-                        'scored_leads.xlsx',
-                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                        use_container_width=True
-                    )
-                
-                with col3:
+                    def to_excel(d):
+                        out = BytesIO()
+                        with pd.ExcelWriter(out, engine='openpyxl') as w:
+                            d.to_excel(w, index=False)
+                        return out.getvalue()
+                    st.download_button("📊 Download Excel", to_excel(df), 'scored_leads.xlsx',
+                                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                       use_container_width=True)
+                with c3:
                     hot_df = df[df['lead_category'] == 'Hot']
-                    hot_csv = hot_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        "🔥 Hot Leads Only",
-                        hot_csv,
-                        'hot_leads.csv',
-                        'text/csv',
-                        use_container_width=True
-                    )
-                
-                st.markdown("---")
-                st.markdown("#### Summary")
-                
-                summary = pd.DataFrame({
-                    'Metric': [
-                        '📊 Total Leads',
-                        '🔥 Hot Leads',
-                        '🌡️ Warm Leads',
-                        '❄️ Cold Leads',
-                        '⭐ Average Score',
-                        '📈 Highest Score',
-                        '📉 Lowest Score'
-                    ],
-                    'Value': [
-                        f"{len(df):,}",
-                        f"{len(df[df['lead_category'] == 'Hot']):,}",
-                        f"{len(df[df['lead_category'] == 'Warm']):,}",
-                        f"{len(df[df['lead_category'] == 'Cold']):,}",
-                        f"{df['lead_score'].mean():.2f}",
-                        f"{df['lead_score'].max()}",
-                        f"{df['lead_score'].min()}"
-                    ]
-                })
-                
-                st.dataframe(summary, use_container_width=True, hide_index=True)
-        
+                    st.download_button("🔥 Hot Leads Only", hot_df.to_csv(index=False).encode('utf-8'),
+                                       'hot_leads.csv', 'text/csv', use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
         else:
             st.markdown("""
-                <div style='background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%); 
-                            padding: 4rem 2rem; border-radius: 20px; text-align: center; border: 2px solid rgba(59, 130, 246, 0.3);'>
-                    <h1 style='font-size: 3rem; margin-bottom: 1rem; color: #60a5fa;'>🚀 AI Lead Scoring</h1>
-                    <p style='font-size: 1.3rem; color: #cbd5e1; opacity: 0.9;'>
-                        Upload your CRM data and let AI analyze your leads
-                    </p>
-                    <p style='margin-top: 2rem; font-size: 1rem; color: #94a3b8;'>
-                        👈 Select data source from the sidebar and click <b>TRAIN & SCORE</b>
-                    </p>
-                </div>
+            <div class="section-card" style="text-align:center; padding: 60px 20px;">
+                <div style="font-size: 3rem; margin-bottom: 16px;">🎯</div>
+                <h3 style="color: #0f2044; font-size: 1.3rem; margin-bottom: 8px;">Ready to Score Leads</h3>
+                <p style="color: #94a3b8; font-size: 0.9rem;">Select a data source in the sidebar and click <b>Train & Score</b> to begin.</p>
+            </div>
             """, unsafe_allow_html=True)
-    
-    # ========================================================================
-    # ADMIN TAB 2: USER MANAGEMENT
-    # ========================================================================
-    
-    with admin_main_tab2:
-        st.markdown("## 👑 User Management System")
-        
-        user_tab1, user_tab2, user_tab3, user_tab4 = st.tabs([
-            "🟢 LIVE DASHBOARD",
-            "➕ CREATE USER",
-            "👥 MANAGE USERS",
-            "📊 ACTIVITY LOG"
-        ])
-        
-        with user_tab1:
-            st.markdown("### 🟢 Live User Activity")
-            
-            if st.button("🔄 Refresh", key="admin_refresh"):
+
+    # ── Admin User Management Tab ──
+    with admin_tab2:
+        st.markdown("""
+        <div class="page-topbar" style="margin-bottom: 20px;">
+            <div>
+                <p class="page-topbar-title">User Management</p>
+                <p class="page-topbar-sub">Create, manage, and monitor all users</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        ut1, ut2, ut3, ut4 = st.tabs(["🟢 Live Users", "➕ Create User", "👥 All Users", "📊 Activity Log"])
+
+        with ut1:
+            st.markdown('<div class="section-card"><p class="section-card-title">Currently Online</p>', unsafe_allow_html=True)
+            if st.button("Refresh", key="admin_refresh"):
                 st.rerun()
-            
-            active_users = get_currently_logged_in_users()
-            
-            if active_users:
-                st.success(f"**{len(active_users)} user(s) online**")
-                
-                for user in active_users:
-                    user_id, username, email, login_time, role = user
-                    user_stats = get_user_stats(user_id)
-                    
+            active = get_currently_logged_in_users()
+            if active:
+                st.success(f"{len(active)} user(s) online right now")
+                for u in active:
+                    uid, uname_, email_, login_t, urole = u
+                    ustats = get_user_stats(uid)
                     st.markdown(f"""
-<div style='background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.1) 100%);
-            padding: 20px; border-radius: 12px; margin: 12px 0; border: 2px solid rgba(16, 185, 129, 0.3);'>
-    <span class='online-indicator'></span>
-    <b style='color: #10b981; font-size: 1.1rem;'>{username}</b> 
-    <span style='color: #6ee7b7; margin-left: 10px;'>({role})</span><br>
-    <small style='color: #94a3b8;'>📧 {email if email else 'N/A'} | 🕒 {login_time}</small><br>
-    <small style='color: #cbd5e1;'>📊 {user_stats['total_scorings']} scorings | 📄 {user_stats['total_leads']:,} leads</small>
-</div>
+                    <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; padding:14px 18px; margin:8px 0;">
+                        <span class="dot-online"></span>
+                        <b style="color:#0f2044;">{uname_}</b>
+                        <span style="color:#64748b; font-size:0.8rem; margin-left:8px;">({urole})</span><br>
+                        <small style="color:#64748b;">📧 {email_ or 'N/A'} &nbsp;|&nbsp; 🕒 {login_t}</small><br>
+                        <small style="color:#64748b;">📊 {ustats['total_scorings']} scorings &nbsp;|&nbsp; 📄 {ustats['total_leads']:,} leads</small>
+                    </div>
                     """, unsafe_allow_html=True)
             else:
-                st.warning("No users currently online")
-        
-        with user_tab2:
-            st.markdown("### ➕ Create New User")
-            
+                st.info("No users currently online")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with ut2:
+            st.markdown('<div class="section-card"><p class="section-card-title">Create New User</p>', unsafe_allow_html=True)
             with st.form("create_user_form"):
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    new_username = st.text_input("Username *")
-                    new_email = st.text_input("Email")
-                with col_b:
-                    new_password = st.text_input("Password *", type="password")
-                    confirm_password = st.text_input("Confirm Password *", type="password")
-                
-                submitted = st.form_submit_button("✅ CREATE USER", type="primary", use_container_width=True)
-                
-                if submitted:
-                    if new_username and new_password == confirm_password and len(new_password) >= 6:
-                        if create_user_by_admin(new_username, new_password, new_email):
-                            st.success(f"""
-✅ User Created Successfully!
-
-**Username:** `{new_username}`
-**Password:** `{new_password}`
-**Email:** `{new_email if new_email else 'Not provided'}`
-
-Please share these credentials with the user.
-                            """)
+                ca, cb = st.columns(2)
+                with ca:
+                    nu = st.text_input("Username *")
+                    ne = st.text_input("Email")
+                with cb:
+                    np_ = st.text_input("Password *", type="password")
+                    cp = st.text_input("Confirm Password *", type="password")
+                if st.form_submit_button("Create User", type="primary", use_container_width=True):
+                    if nu and np_ == cp and len(np_) >= 6:
+                        if create_user_by_admin(nu, np_, ne):
+                            st.success(f"User `{nu}` created successfully!")
                         else:
-                            st.error("❌ Username already exists!")
-                    elif len(new_password) < 6:
-                        st.error("❌ Password must be at least 6 characters")
+                            st.error("Username already exists.")
+                    elif len(np_) < 6:
+                        st.error("Password must be ≥ 6 characters")
                     else:
-                        st.error("❌ Passwords don't match or fields are empty")
-        
-        with user_tab3:
-            st.markdown("### 👥 All Users")
-            
+                        st.error("Passwords don't match or fields are empty")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with ut3:
+            st.markdown('<div class="section-card"><p class="section-card-title">All Registered Users</p>', unsafe_allow_html=True)
             users = get_all_users()
-            user_data = []
-            for user in users:
-                user_data.append({
-                    'ID': user[0],
-                    'Username': user[1],
-                    'Email': user[2] if user[2] else 'N/A',
-                    'Created': user[3],
-                    'Last Login': user[4] if user[4] else 'Never',
-                    'Status': '🟢 Active' if user[5] else '🔴 Inactive',
-                    'Role': user[6]
-                })
-            
-            df_users = pd.DataFrame(user_data)
-            st.dataframe(df_users, use_container_width=True, height=500)
-            
+            if users:
+                user_data = [{'ID': u[0], 'Username': u[1], 'Email': u[2] or 'N/A',
+                              'Created': u[3], 'Last Login': u[4] or 'Never',
+                              'Status': '🟢 Active' if u[5] else '🔴 Inactive', 'Role': u[6]}
+                             for u in users]
+                st.dataframe(pd.DataFrame(user_data), use_container_width=True, height=400)
             st.markdown("---")
-            st.markdown("### ⚙️ User Actions")
-            
-            col_m1, col_m2, col_m3 = st.columns(3)
-            with col_m1:
-                user_id_action = st.number_input("User ID", min_value=1, step=1)
-            with col_m2:
-                action_type = st.selectbox("Action", ["Enable", "Disable", "Delete"])
-            with col_m3:
+            st.markdown("**User Actions**")
+            ca, cb, cc = st.columns(3)
+            with ca: uid_a = st.number_input("User ID", min_value=1, step=1)
+            with cb: action_t = st.selectbox("Action", ["Enable", "Disable", "Delete"])
+            with cc:
                 st.write("")
-                if st.button("▶️ EXECUTE", type="primary"):
-                    if user_id_action != 1:  # Protect admin account
-                        if action_type == "Enable":
-                            toggle_user_status(user_id_action, 1)
-                            st.success("✅ User enabled!")
-                            time.sleep(1)
-                            st.rerun()
-                        elif action_type == "Disable":
-                            toggle_user_status(user_id_action, 0)
-                            st.warning("⚠️ User disabled!")
-                            time.sleep(1)
-                            st.rerun()
-                        elif action_type == "Delete":
-                            delete_user(user_id_action)
-                            st.error("🗑️ User deleted!")
-                            time.sleep(1)
-                            st.rerun()
+                if st.button("Execute", type="primary"):
+                    if uid_a != 1:
+                        if action_t == "Enable":
+                            toggle_user_status(uid_a, 1); st.success("User enabled!"); time.sleep(1); st.rerun()
+                        elif action_t == "Disable":
+                            toggle_user_status(uid_a, 0); st.warning("User disabled!"); time.sleep(1); st.rerun()
+                        elif action_t == "Delete":
+                            delete_user(uid_a); st.error("User deleted!"); time.sleep(1); st.rerun()
                     else:
-                        st.error("❌ Cannot modify admin account")
-        
-        with user_tab4:
-            st.markdown("### 📊 System Activity Log")
-            
-            all_activities = get_all_user_activities()
-            
-            if all_activities:
-                activity_data = []
-                for activity in all_activities:
-                    username, action, details, leads_scored, timestamp = activity
-                    activity_data.append({
-                        'Username': username,
-                        'Action': action,
-                        'Details': details if details else '-',
-                        'Leads': leads_scored if leads_scored else '-',
-                        'Timestamp': timestamp
-                    })
-                
-                df_activities = pd.DataFrame(activity_data)
-                st.dataframe(df_activities, use_container_width=True, height=600)
+                        st.error("Cannot modify admin account")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with ut4:
+            st.markdown('<div class="section-card"><p class="section-card-title">Activity Log</p><p class="section-card-sub">Last 100 actions across all users</p>', unsafe_allow_html=True)
+            all_acts = get_all_user_activities()
+            if all_acts:
+                act_data = [{'Username': a[0], 'Action': a[1], 'Details': a[2] or '—',
+                             'Leads': a[3] or '—', 'Timestamp': a[4]} for a in all_acts]
+                st.dataframe(pd.DataFrame(act_data), use_container_width=True, height=500)
             else:
                 st.info("No activities logged yet")
+            st.markdown('</div>', unsafe_allow_html=True)
 
 # ============================================================================
 # USER DASHBOARD
 # ============================================================================
-
 else:
-    
-    st.markdown('<div class="main-header">🎯 LEAD SCORING DASHBOARD</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">AI-Powered Lead Intelligence & Analytics</div>', unsafe_allow_html=True)
-    
-    # Data source sidebar
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### 📂 Data Source")
-        
-        upload_option = st.radio(
-            "Select Source:",
-            ["Use Default Dataset", "Upload Custom File"]
-        )
-        
-        if upload_option == "Upload Custom File":
-            uploaded_file = st.file_uploader(
-                "Upload Excel File",
-                type=['xlsx', 'xls']
-            )
-            data_path = uploaded_file
-        else:
-            data_path = "5000_rental_crm_leads.xlsx"
-        
-        st.markdown("---")
-        
-        train_button = st.button(
-            "🚀 TRAIN & SCORE",
-            type="primary",
-            use_container_width=True
-        )
-    
-    # Training
+    st.markdown(f"""
+    <div class="page-topbar">
+        <div>
+            <p class="page-topbar-title">Lead Scoring Dashboard</p>
+            <p class="page-topbar-sub">{datetime.now().strftime("%A, %B %d %Y")} &nbsp;·&nbsp; Welcome back, <b>{uname}</b></p>
+        </div>
+        <span class="topbar-badge">USER</span>
+    </div>
+    """, unsafe_allow_html=True)
+
     if train_button and data_path:
-        with st.spinner("🔄 Loading data..."):
+        with st.spinner("Loading data..."):
             df = load_data(data_path)
-        
         if df is not None:
-            with st.expander("📊 Dataset Preview", expanded=False):
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("📝 Rows", f"{len(df):,}")
-                with col2:
-                    st.metric("📋 Columns", len(df.columns))
-                with col3:
-                    st.metric("❓ Missing", df.isnull().sum().sum())
-                with col4:
-                    memory = df.memory_usage(deep=True).sum() / 1024**2
-                    st.metric("💾 Memory", f"{memory:.2f} MB")
-                
+            with st.expander("Dataset Preview", expanded=False):
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Rows", f"{len(df):,}")
+                c2.metric("Columns", len(df.columns))
+                c3.metric("Missing", df.isnull().sum().sum())
+                c4.metric("Memory", f"{df.memory_usage(deep=True).sum()/1024**2:.2f} MB")
                 st.dataframe(df.head(10), use_container_width=True)
-            
             try:
                 model, scored_df, features, accuracy, roc_auc = train_model(df)
-                
-                st.session_state['model'] = model
-                st.session_state['scored_df'] = scored_df
-                st.session_state['features'] = features
-                st.session_state['accuracy'] = accuracy
-                st.session_state['roc_auc'] = roc_auc
-                
+                st.session_state.update({'model': model, 'scored_df': scored_df,
+                                         'features': features, 'accuracy': accuracy, 'roc_auc': roc_auc})
                 log_usage(st.session_state.user['id'], 'score_leads', 'User scoring', len(scored_df))
-                
-                st.success("✅ Scoring complete!")
+                st.success("Scoring complete!")
                 st.balloons()
-                
             except Exception as e:
-                st.error(f"❌ Error: {e}")
-    
-    # Display results
+                st.error(f"Error: {e}")
+
     if 'scored_df' in st.session_state:
         df = st.session_state['scored_df']
         accuracy = st.session_state.get('accuracy', 0)
         roc_auc = st.session_state.get('roc_auc', None)
-        
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📊 DASHBOARD",
-            "🔥 PRIORITY",
-            "📈 ANALYTICS",
-            "📋 ALL LEADS",
-            "💾 EXPORT"
-        ])
-        
-        with tab1:
-            st.markdown("### 📊 Performance Dashboard")
-            
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            with col1:
-                st.metric("📊 Total", f"{len(df):,}")
-            with col2:
-                hot = len(df[df['lead_category'] == 'Hot'])
-                st.markdown(f"""
-                    <div class="metric-card metric-card-hot">
-                        <div style="font-size: 0.9rem; color: #fca5a5; font-weight: 700;">🔥 HOT</div>
-                        <div style="font-size: 2.5rem; font-weight: 900; color: #ef4444; margin: 0.5rem 0;">{hot}</div>
-                        <div style="font-size: 0.85rem; color: #fca5a5;">{hot/len(df)*100:.1f}%</div>
-                    </div>
-                """, unsafe_allow_html=True)
-            with col3:
-                warm = len(df[df['lead_category'] == 'Warm'])
-                st.markdown(f"""
-                    <div class="metric-card metric-card-warm">
-                        <div style="font-size: 0.9rem; color: #fcd34d; font-weight: 700;">🌡️ WARM</div>
-                        <div style="font-size: 2.5rem; font-weight: 900; color: #f59e0b; margin: 0.5rem 0;">{warm}</div>
-                        <div style="font-size: 0.85rem; color: #fcd34d;">{warm/len(df)*100:.1f}%</div>
-                    </div>
-                """, unsafe_allow_html=True)
-            with col4:
-                cold = len(df[df['lead_category'] == 'Cold'])
-                st.markdown(f"""
-                    <div class="metric-card metric-card-cold">
-                        <div style="font-size: 0.9rem; color: #93c5fd; font-weight: 700;">❄️ COLD</div>
-                        <div style="font-size: 2.5rem; font-weight: 900; color: #3b82f6; margin: 0.5rem 0;">{cold}</div>
-                        <div style="font-size: 0.85rem; color: #93c5fd;">{cold/len(df)*100:.1f}%</div>
-                    </div>
-                """, unsafe_allow_html=True)
-            with col5:
-                st.metric("⭐ Avg", f"{df['lead_score'].mean():.1f}")
-            
-            st.markdown("---")
-            
-            st.markdown("### 🎯 Model Performance")
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                gauge = create_gauge_chart(accuracy*100, "Accuracy", "#3b82f6")
-                st.plotly_chart(gauge, use_container_width=True)
-            
-            with col2:
-                if roc_auc:
-                    gauge = create_gauge_chart(roc_auc*100, "ROC AUC", "#8b5cf6")
-                    st.plotly_chart(gauge, use_container_width=True)
-                else:
-                    st.info("ROC AUC not available")
-            
-            with col3:
-                conversion = (df['lead_score'] > 70).sum() / len(df) * 100
-                gauge = create_gauge_chart(conversion, "Hot %", "#10b981")
-                st.plotly_chart(gauge, use_container_width=True)
-            
-            st.markdown("---")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                category_counts = df['lead_category'].value_counts()
-                fig_pie = go.Figure(data=[go.Pie(
-                    labels=category_counts.index,
-                    values=category_counts.values,
-                    hole=0.4,
-                    marker=dict(colors=['#ef4444', '#f59e0b', '#3b82f6'])
-                )])
-                fig_pie.update_layout(
-                    title="Categories",
-                    height=400,
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    font={'family': 'Inter', 'color': '#e2e8f0'}
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
-            
-            with col2:
-                fig_hist = go.Figure()
-                fig_hist.add_trace(go.Histogram(
-                    x=df['lead_score'],
-                    nbinsx=20,
-                    marker=dict(color=df['lead_score'], colorscale='Viridis')
-                ))
-                fig_hist.update_layout(
-                    title="Scores",
-                    height=400,
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    font={'family': 'Inter', 'color': '#e2e8f0'}
-                )
-                st.plotly_chart(fig_hist, use_container_width=True)
-        
-        with tab2:
-            st.markdown("### 🔥 Priority Leads")
-            
-            col1, col2, col3 = st.columns([2, 2, 1])
-            with col1:
-                category_filter = st.multiselect("Category", ['Hot', 'Warm', 'Cold'], default=['Hot'])
-            with col2:
-                min_score = st.slider("Min Score", 0, 100, 70)
-            with col3:
-                show_count = st.number_input("Show", 10, 100, 20, 10)
-            
-            filtered = df[
-                (df['lead_category'].isin(category_filter)) & 
-                (df['lead_score'] >= min_score)
+
+        t1, t2, t3, t4, t5 = st.tabs(["📊 Dashboard", "🔥 Priority", "📈 Analytics", "📋 All Leads", "💾 Export"])
+
+        with t1:
+            hot = len(df[df['lead_category'] == 'Hot'])
+            warm = len(df[df['lead_category'] == 'Warm'])
+            cold = len(df[df['lead_category'] == 'Cold'])
+            total = len(df)
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            cards = [
+                (c1, "📊", total, "Total Leads", "#0f2044"),
+                (c2, "🔥", hot, f"Hot ({hot/total*100:.0f}%)", "#dc2626"),
+                (c3, "🌡️", warm, f"Warm ({warm/total*100:.0f}%)", "#ea580c"),
+                (c4, "❄️", cold, f"Cold ({cold/total*100:.0f}%)", "#2563eb"),
+                (c5, "⭐", f"{df['lead_score'].mean():.1f}", "Avg Score", "#7c3aed"),
             ]
-            
-            top_leads = filtered.nlargest(show_count, 'lead_score')
-            st.dataframe(top_leads, use_container_width=True, height=600)
-        
-        with tab3:
-            st.markdown("### 📈 Analytics")
-            
+            for col, icon, val, label, accent in cards:
+                with col:
+                    st.markdown(f"""
+                    <div class="stat-card">
+                        <div class="stat-card-accent" style="background:{accent};"></div>
+                        <div class="stat-card-icon" style="background:{accent}18;">{icon}</div>
+                        <div class="stat-card-value">{val}</div>
+                        <div class="stat-card-label">{label}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.markdown('<div class="section-card"><p class="section-card-title">Model Performance</p>', unsafe_allow_html=True)
+                g1, g2, g3 = st.columns(3)
+                with g1:
+                    st.plotly_chart(create_donut_chart(accuracy*100, "Accuracy", "#0f2044", "#f0f4f8"),
+                                    use_container_width=True, config={'displayModeBar': False})
+                with g2:
+                    if roc_auc:
+                        st.plotly_chart(create_donut_chart(roc_auc*100, "ROC AUC", "#f97316", "#fff7ed"),
+                                        use_container_width=True, config={'displayModeBar': False})
+                with g3:
+                    st.plotly_chart(create_donut_chart(hot/total*100, "Hot %", "#dc2626", "#fee2e2"),
+                                    use_container_width=True, config={'displayModeBar': False})
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            with col_r:
+                st.markdown('<div class="section-card"><p class="section-card-title">Category Breakdown</p>', unsafe_allow_html=True)
+                cat_counts = df['lead_category'].value_counts()
+                fig_pie = go.Figure(data=[go.Pie(
+                    labels=cat_counts.index, values=cat_counts.values, hole=0.55,
+                    marker=dict(colors=['#dc2626', '#ea580c', '#2563eb']),
+                    textinfo='label+percent', textfont=dict(size=12, family='DM Sans'), showlegend=False
+                )])
+                fig_pie.update_layout(height=220, margin=dict(l=0,r=0,t=10,b=10),
+                                      paper_bgcolor='rgba(0,0,0,0)', font={'family': 'DM Sans', 'color': '#0f2044'})
+                st.plotly_chart(fig_pie, use_container_width=True, config={'displayModeBar': False})
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            st.markdown('<div class="section-card"><p class="section-card-title">Score Distribution</p>', unsafe_allow_html=True)
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Histogram(x=df['lead_score'], nbinsx=20,
+                                             marker=dict(color='#0f2044', opacity=0.85)))
+            fig_hist.update_layout(height=200, margin=dict(l=0,r=0,t=10,b=10),
+                                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                                    xaxis=dict(color='#64748b', gridcolor='#f1f5f9'),
+                                    yaxis=dict(color='#64748b', gridcolor='#f1f5f9'),
+                                    font={'family': 'DM Sans'})
+            st.plotly_chart(fig_hist, use_container_width=True, config={'displayModeBar': False})
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with t2:
+            st.markdown('<div class="section-card"><p class="section-card-title">Priority Leads</p>', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns([2, 2, 1])
+            with c1: cat_filter = st.multiselect("Category", ['Hot', 'Warm', 'Cold'], default=['Hot'])
+            with c2: min_score = st.slider("Min Score", 0, 100, 70)
+            with c3: show_n = st.number_input("Show", 10, 100, 20, 10)
+            filtered = df[(df['lead_category'].isin(cat_filter)) & (df['lead_score'] >= min_score)]
+            st.dataframe(filtered.nlargest(show_n, 'lead_score'), use_container_width=True, height=500)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with t3:
+            st.markdown('<div class="section-card"><p class="section-card-title">Analytics</p>', unsafe_allow_html=True)
             if 'source' in df.columns:
-                source_stats = df.groupby('source')['lead_score'].agg(['mean', 'count']).sort_values('mean', ascending=False)
+                src = df.groupby('source')['lead_score'].agg(['mean', 'count']).sort_values('mean', ascending=False)
                 fig_bar = go.Figure()
-                fig_bar.add_trace(go.Bar(
-                    x=source_stats.index,
-                    y=source_stats['mean'],
-                    marker=dict(color=source_stats['mean'], colorscale='Viridis')
-                ))
-                fig_bar.update_layout(
-                    title="Avg Score by Source",
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    font={'color': '#e2e8f0'}
-                )
-                st.plotly_chart(fig_bar, use_container_width=True)
-        
-        with tab4:
-            st.markdown("### 📋 All Leads")
-            st.dataframe(df, use_container_width=True, height=600)
-        
-        with tab5:
-            st.markdown("### 💾 Export")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button("📄 CSV", csv, 'leads.csv', use_container_width=True)
-            
-            with col2:
+                fig_bar.add_trace(go.Bar(x=src.index, y=src['mean'],
+                                          marker=dict(color='#0f2044', opacity=0.85),
+                                          text=src['mean'].round(1), textposition='outside'))
+                fig_bar.update_layout(title="Avg Score by Source", height=320,
+                                       paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                                       font={'family': 'DM Sans', 'color': '#0f2044'},
+                                       xaxis=dict(color='#64748b'), yaxis=dict(color='#64748b', gridcolor='#f1f5f9'))
+                st.plotly_chart(fig_bar, use_container_width=True, config={'displayModeBar': False})
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with t4:
+            st.markdown('<div class="section-card"><p class="section-card-title">All Leads</p>', unsafe_allow_html=True)
+            st.dataframe(df, use_container_width=True, height=500)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with t5:
+            st.markdown('<div class="section-card"><p class="section-card-title">Export</p>', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.download_button("📄 CSV", df.to_csv(index=False).encode('utf-8'),
+                                   'leads.csv', 'text/csv', use_container_width=True)
+            with c2:
                 @st.cache_data
-                def to_excel(dataframe):
-                    output = BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        dataframe.to_excel(writer, index=False)
-                    return output.getvalue()
-                
-                excel = to_excel(df)
-                st.download_button("📊 Excel", excel, 'leads.xlsx', use_container_width=True)
-            
-            with col3:
-                hot_csv = df[df['lead_category'] == 'Hot'].to_csv(index=False).encode('utf-8')
-                st.download_button("🔥 Hot Only", hot_csv, 'hot_leads.csv', use_container_width=True)
-    
+                def to_excel2(d):
+                    out = BytesIO()
+                    with pd.ExcelWriter(out, engine='openpyxl') as w:
+                        d.to_excel(w, index=False)
+                    return out.getvalue()
+                st.download_button("📊 Excel", to_excel2(df), 'leads.xlsx',
+                                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                   use_container_width=True)
+            with c3:
+                st.download_button("🔥 Hot Only", df[df['lead_category']=='Hot'].to_csv(index=False).encode('utf-8'),
+                                   'hot_leads.csv', 'text/csv', use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
     else:
         st.markdown("""
-            <div style='background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%); 
-                        padding: 4rem 2rem; border-radius: 20px; text-align: center; border: 2px solid rgba(59, 130, 246, 0.3);'>
-                <h1 style='font-size: 3rem; color: #60a5fa;'>🚀 Get Started</h1>
-                <p style='font-size: 1.3rem; color: #cbd5e1; margin-top: 1rem;'>
-                    Upload your CRM data and score your leads with AI
-                </p>
-                <p style='margin-top: 2rem; color: #94a3b8;'>
-                    👈 Select data source and click <b>TRAIN & SCORE</b>
-                </p>
-            </div>
+        <div class="section-card" style="text-align:center; padding: 60px 20px;">
+            <div style="font-size: 3rem; margin-bottom: 16px;">🎯</div>
+            <h3 style="color: #0f2044; font-size: 1.3rem; margin-bottom: 8px;">Ready to Score Your Leads</h3>
+            <p style="color: #94a3b8; font-size: 0.9rem;">Select a data source from the sidebar and click <b>Train & Score</b> to get started.</p>
+        </div>
         """, unsafe_allow_html=True)
 
 # Footer
-st.markdown("---")
 st.markdown(f"""
-<div style='text-align: center; color: #94a3b8; padding: 1rem 0;'>
-    <p>🔐 Logged in as: <b style='color: #60a5fa;'>{st.session_state.user['username']}</b> 
-       ({st.session_state.user['role']}) | 
-       {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
-    <p style='opacity: 0.7;'>✨ AI Lead Scoring Pro | Version 2.0 | © 2024</p>
+<div style="text-align:center; padding: 16px 0; margin-top: 8px; border-top: 1px solid #e8edf2;">
+    <p style="font-size:0.75rem; color:#94a3b8; margin:0;">
+        LeadScore Pro v2.0 &nbsp;·&nbsp; Logged in as <b style="color:#0f2044;">{st.session_state.user['username']}</b> &nbsp;·&nbsp; {datetime.now().strftime("%Y-%m-%d %H:%M")}
+    </p>
 </div>
 """, unsafe_allow_html=True)
