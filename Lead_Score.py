@@ -23,38 +23,21 @@ import pathlib
 warnings.filterwarnings('ignore')
 
 # ============================================================================
-# FIX: PERMANENT DATABASE PATH
-# The DB file is stored in a fixed folder that NEVER changes or gets wiped.
-# On Windows: C:\Users\YourName\.leadscore_pro\lead_scoring.db
-# On Linux/Mac: /home/yourname/.leadscore_pro/lead_scoring.db
-# This folder persists across restarts, redeployments, and code changes.
+# PERMANENT DATABASE PATH
 # ============================================================================
 
 def get_db_path():
-    """
-    Returns a permanent path for the SQLite database.
-    Uses the user's home directory so it survives app restarts and redeployments.
-    
-    Priority:
-    1. Environment variable DB_PATH (set this on Streamlit Cloud secrets if needed)
-    2. ~/.leadscore_pro/lead_scoring.db (permanent home directory location)
-    """
-    # Option 1: Allow overriding via environment variable (useful for servers)
     env_path = os.environ.get("DB_PATH")
     if env_path:
         db_file = pathlib.Path(env_path)
         db_file.parent.mkdir(parents=True, exist_ok=True)
         return str(db_file)
-
-    # Option 2: Store in a hidden folder in the user's home directory
-    # This is permanent and survives app restarts
     home_dir = pathlib.Path.home()
     db_dir = home_dir / ".leadscore_pro"
-    db_dir.mkdir(parents=True, exist_ok=True)  # Create folder if it doesn't exist
+    db_dir.mkdir(parents=True, exist_ok=True)
     db_file = db_dir / "lead_scoring.db"
     return str(db_file)
 
-# Global DB path — computed once at startup
 DB_PATH = get_db_path()
 
 # ============================================================================
@@ -68,64 +51,44 @@ st.set_page_config(
 )
 
 # ============================================================================
-# DATABASE FUNCTIONS — All use DB_PATH instead of hardcoded filename
+# DATABASE FUNCTIONS
 # ============================================================================
 
 def get_conn():
-    """Get a database connection using the permanent DB path."""
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def init_database():
     conn = get_conn()
     c = conn.cursor()
 
-    c.execute('''CREATE TABLE IF NOT EXISTS users
+    c.execute('''CREATE TABLE IF NOT EXISTS admin
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT UNIQUE NOT NULL,
                   password_hash TEXT NOT NULL,
                   email TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   last_login TIMESTAMP,
-                  is_active BOOLEAN DEFAULT 1,
-                  role TEXT DEFAULT 'user')''')
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS usage_logs
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
                   action TEXT,
                   details TEXT,
                   leads_scored INTEGER,
-                  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY (user_id) REFERENCES users (id))''')
+                  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS sessions
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
                   login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   logout_time TIMESTAMP,
-                  is_active BOOLEAN DEFAULT 1,
-                  session_token TEXT,
-                  FOREIGN KEY (user_id) REFERENCES users (id))''')
+                  is_active BOOLEAN DEFAULT 1)''')
 
-    # Add missing columns safely (for users upgrading from old version)
-    try:
-        c.execute("PRAGMA table_info(sessions)")
-        columns = [col[1] for col in c.fetchall()]
-        if 'is_active' not in columns:
-            c.execute("ALTER TABLE sessions ADD COLUMN is_active BOOLEAN DEFAULT 1")
-        if 'session_token' not in columns:
-            c.execute("ALTER TABLE sessions ADD COLUMN session_token TEXT")
-        conn.commit()
-    except Exception:
-        pass
-
-    # Create default admin account if it doesn't exist
-    c.execute("SELECT * FROM users WHERE username = 'admin'")
+    # Create default admin account if not exists
+    c.execute("SELECT * FROM admin WHERE username = 'admin'")
     if not c.fetchone():
         admin_password = hashlib.sha256('admin123'.encode()).hexdigest()
         c.execute(
-            "INSERT INTO users (username, password_hash, email, role) VALUES (?, ?, ?, ?)",
-            ('admin', admin_password, 'admin@leadscore.com', 'admin')
+            "INSERT INTO admin (username, password_hash, email) VALUES (?, ?, ?)",
+            ('admin', admin_password, 'admin@leadscore.com')
         )
 
     conn.commit()
@@ -136,190 +99,91 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 
-def verify_user(username, password):
+def verify_admin(username, password):
     conn = get_conn()
     c = conn.cursor()
     try:
         password_hash = hash_password(password)
         c.execute(
-            "SELECT id, username, role, is_active FROM users WHERE username = ? AND password_hash = ?",
+            "SELECT id, username FROM admin WHERE username = ? AND password_hash = ?",
             (username, password_hash)
         )
-        user = c.fetchone()
-        if user and user[3]:
-            c.execute("UPDATE users SET last_login = ? WHERE id = ?", (datetime.now(), user[0]))
-            session_token = hashlib.md5(f"{user[0]}{datetime.now()}".encode()).hexdigest()
-            c.execute(
-                "UPDATE sessions SET is_active = 0, logout_time = ? WHERE user_id = ? AND is_active = 1",
-                (datetime.now(), user[0])
-            )
-            c.execute(
-                "INSERT INTO sessions (user_id, login_time, is_active, session_token) VALUES (?, ?, ?, ?)",
-                (user[0], datetime.now(), 1, session_token)
-            )
+        admin = c.fetchone()
+        if admin:
+            c.execute("UPDATE admin SET last_login = ? WHERE id = ?", (datetime.now(), admin[0]))
+            c.execute("UPDATE sessions SET is_active = 0, logout_time = ? WHERE is_active = 1", (datetime.now(),))
+            c.execute("INSERT INTO sessions (login_time, is_active) VALUES (?, ?)", (datetime.now(), 1))
             conn.commit()
             conn.close()
-            return {
-                'id': user[0], 'username': user[1],
-                'role': user[2], 'is_active': user[3],
-                'session_token': session_token
-            }
+            return {'id': admin[0], 'username': admin[1]}
         conn.close()
         return None
-    except Exception as e:
-        conn.close()
-        return None
-
-
-def create_user_by_admin(username, password, email):
-    conn = get_conn()
-    c = conn.cursor()
-    try:
-        password_hash = hash_password(password)
-        c.execute(
-            "INSERT INTO users (username, password_hash, email, role) VALUES (?, ?, ?, ?)",
-            (username, password_hash, email, 'user')
-        )
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        conn.close()
-        return False
-
-
-def logout_user(user_id):
-    conn = get_conn()
-    c = conn.cursor()
-    try:
-        c.execute(
-            "UPDATE sessions SET is_active = 0, logout_time = ? WHERE user_id = ? AND is_active = 1",
-            (datetime.now(), user_id)
-        )
     except Exception:
-        c.execute(
-            "UPDATE sessions SET logout_time = ? WHERE user_id = ? AND logout_time IS NULL",
-            (datetime.now(), user_id)
-        )
+        conn.close()
+        return None
+
+
+def logout_admin():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE sessions SET is_active = 0, logout_time = ? WHERE is_active = 1", (datetime.now(),))
     conn.commit()
     conn.close()
 
 
-def log_usage(user_id, action, details="", leads_scored=0):
+def log_usage(action, details="", leads_scored=0):
     conn = get_conn()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO usage_logs (user_id, action, details, leads_scored) VALUES (?, ?, ?, ?)",
-        (user_id, action, details, leads_scored)
+        "INSERT INTO usage_logs (action, details, leads_scored) VALUES (?, ?, ?)",
+        (action, details, leads_scored)
     )
     conn.commit()
     conn.close()
 
 
-def get_user_stats(user_id):
+def get_admin_stats():
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM usage_logs WHERE user_id = ? AND action = 'score_leads'", (user_id,))
+    c.execute("SELECT COUNT(*) FROM usage_logs WHERE action = 'score_leads'")
     total_scorings = c.fetchone()[0]
-    c.execute("SELECT SUM(leads_scored) FROM usage_logs WHERE user_id = ? AND action = 'score_leads'", (user_id,))
+    c.execute("SELECT SUM(leads_scored) FROM usage_logs WHERE action = 'score_leads'")
     total_leads = c.fetchone()[0] or 0
-    c.execute("SELECT COUNT(*) FROM sessions WHERE user_id = ?", (user_id,))
+    c.execute("SELECT COUNT(*) FROM sessions")
     total_logins = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM sessions WHERE DATE(login_time) = DATE('now')")
+    today_logins = c.fetchone()[0]
+    c.execute("SELECT last_login FROM admin WHERE username = 'admin'")
+    row = c.fetchone()
+    last_login = row[0] if row else "Never"
     conn.close()
-    return {'total_scorings': total_scorings, 'total_leads': total_leads, 'total_logins': total_logins}
+    return {
+        'total_scorings': total_scorings,
+        'total_leads': total_leads,
+        'total_logins': total_logins,
+        'today_logins': today_logins,
+        'last_login': last_login,
+    }
 
 
-def get_all_users():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        "SELECT id, username, email, created_at, last_login, is_active, role FROM users ORDER BY created_at DESC"
-    )
-    users = c.fetchall()
-    conn.close()
-    return users
-
-
-def get_currently_logged_in_users():
-    conn = get_conn()
-    c = conn.cursor()
-    try:
-        c.execute("""
-            SELECT u.id, u.username, u.email, s.login_time, u.role
-            FROM sessions s JOIN users u ON s.user_id = u.id
-            WHERE s.is_active = 1
-            ORDER BY s.login_time DESC
-        """)
-        active_users = c.fetchall()
-    except Exception:
-        active_users = []
-    conn.close()
-    return active_users
-
-
-def get_all_user_activities():
+def get_activity_log():
     conn = get_conn()
     c = conn.cursor()
     c.execute("""
-        SELECT u.username, l.action, l.details, l.leads_scored, l.timestamp
-        FROM usage_logs l JOIN users u ON l.user_id = u.id
-        ORDER BY l.timestamp DESC LIMIT 100
+        SELECT action, details, leads_scored, timestamp
+        FROM usage_logs ORDER BY timestamp DESC LIMIT 100
     """)
     activities = c.fetchall()
     conn.close()
     return activities
 
 
-def get_system_stats():
+def change_admin_password(new_password):
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users WHERE role = 'user'")
-    total_users = c.fetchone()[0]
-    try:
-        c.execute("SELECT COUNT(*) FROM sessions WHERE is_active = 1")
-        currently_online = c.fetchone()[0]
-    except Exception:
-        currently_online = 0
-    c.execute("SELECT COUNT(*) FROM usage_logs WHERE action = 'score_leads'")
-    total_scorings = c.fetchone()[0]
-    c.execute("SELECT SUM(leads_scored) FROM usage_logs WHERE action = 'score_leads'")
-    total_leads = c.fetchone()[0] or 0
-    c.execute("SELECT COUNT(*) FROM sessions WHERE DATE(login_time) = DATE('now')")
-    today_logins = c.fetchone()[0]
-    conn.close()
-    return {
-        'total_users': total_users, 'currently_online': currently_online,
-        'total_scorings': total_scorings, 'total_leads': total_leads,
-        'today_logins': today_logins
-    }
-
-
-def toggle_user_status(user_id, is_active):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("UPDATE users SET is_active = ? WHERE id = ?", (is_active, user_id))
+    c.execute("UPDATE admin SET password_hash = ? WHERE username = 'admin'", (hash_password(new_password),))
     conn.commit()
     conn.close()
-
-
-def delete_user(user_id):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-
-def get_user_activity_details(user_id):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("""
-        SELECT action, details, leads_scored, timestamp FROM usage_logs
-        WHERE user_id = ? ORDER BY timestamp DESC LIMIT 20
-    """, (user_id,))
-    activities = c.fetchall()
-    conn.close()
-    return activities
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -628,9 +492,6 @@ h3 { font-size: 1rem !important; }
     display: inline-block; background: rgba(249,115,22,0.15); color: #fb923c;
     border-radius: 6px; padding: 3px 10px; font-size: 0.75rem; font-weight: 600;
 }
-.dot-online { display: inline-block; width: 8px; height: 8px; background: #10b981; border-radius: 50%; margin-right: 6px; box-shadow: 0 0 6px #10b981; }
-
-/* DB path info box */
 .db-info {
     background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;
     padding: 10px 14px; font-size: 0.75rem; color: #166534; margin-top: 8px; word-break: break-all;
@@ -672,23 +533,23 @@ def show_login_page():
           <div class="login-top">
             <div class="login-logo">🎯</div>
             <h1 class="login-title">LeadScore Pro</h1>
-            <p class="login-sub">AI-Powered Lead Intelligence Platform</p>
+            <p class="login-sub">Admin Login — AI-Powered Lead Intelligence</p>
           </div>
           <div class="login-body">
         """, unsafe_allow_html=True)
 
-        st.markdown('<label class="login-label">Username</label>', unsafe_allow_html=True)
-        username = st.text_input("", key="login_username", placeholder="Enter username", label_visibility="collapsed")
+        st.markdown('<label class="login-label">Admin Username</label>', unsafe_allow_html=True)
+        username = st.text_input("", key="login_username", placeholder="Enter admin username", label_visibility="collapsed")
         st.markdown('<label class="login-label" style="margin-top:14px;">Password</label>', unsafe_allow_html=True)
         password = st.text_input("", type="password", key="login_password", placeholder="Enter password", label_visibility="collapsed")
 
         if st.button("Sign In →", use_container_width=True, key="login_btn"):
             if username and password:
-                user = verify_user(username, password)
-                if user:
+                admin = verify_admin(username, password)
+                if admin:
                     st.session_state.logged_in = True
-                    st.session_state.user = user
-                    log_usage(user['id'], 'login')
+                    st.session_state.admin = admin
+                    log_usage('login')
                     st.success(f"Welcome, {username}!")
                     time.sleep(1)
                     st.rerun()
@@ -703,13 +564,13 @@ def show_login_page():
             <p style="font-size:0.75rem; color:#94a3b8; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin: 14px 0 8px 0;">Platform Features</p>
             <div class="feat-item"><span class="feat-dot"></span>AI-powered scoring engine</div>
             <div class="feat-item"><span class="feat-dot"></span>Real-time analytics dashboard</div>
-            <div class="feat-item"><span class="feat-dot"></span>Permanent user management</div>
             <div class="feat-item"><span class="feat-dot"></span>CSV / Excel export tools</div>
+            <div class="feat-item"><span class="feat-dot"></span>Full admin control panel</div>
           </div>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown('<div class="login-footer">🔒 Secure & Encrypted &nbsp;|&nbsp; LeadScore Pro v2.1 &nbsp;|&nbsp; © 2024</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-footer">🔒 Secure & Encrypted &nbsp;|&nbsp; LeadScore Pro v3.0 &nbsp;|&nbsp; © 2024</div>', unsafe_allow_html=True)
 
 # ============================================================================
 # INITIALIZE
@@ -718,8 +579,8 @@ init_database()
 
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
-if 'user' not in st.session_state:
-    st.session_state.user = None
+if 'admin' not in st.session_state:
+    st.session_state.admin = None
 
 if not st.session_state.logged_in:
     show_login_page()
@@ -732,28 +593,18 @@ st.markdown(THEME_CSS, unsafe_allow_html=True)
 # SIDEBAR
 # ============================================================================
 with st.sidebar:
-    user_stats = get_user_stats(st.session_state.user['id'])
-    uname = st.session_state.user['username']
-    role = st.session_state.user['role']
+    admin_stats = get_admin_stats()
+    uname = st.session_state.admin['username']
     initials = uname[:2].upper()
 
     st.markdown(f"""
     <div class="sidebar-profile">
         <div class="sidebar-avatar">{initials}</div>
         <div class="sidebar-name">{uname}</div>
-        <div class="sidebar-role">{role}</div>
+        <div class="sidebar-role">Administrator</div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("### Navigation")
-    st.markdown("""
-    <div style="padding:0 12px;">
-      <div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px 14px;margin:2px 0;color:#9ab0cc;font-size:0.875rem;">🏠 &nbsp; Home</div>
-      <div style="background:#f97316;border-radius:8px;padding:10px 14px;margin:2px 0;color:white;font-size:0.875rem;">📊 &nbsp; Dashboard</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
     st.markdown("### Data Source")
     upload_option = st.radio("Select:", ["Default Dataset", "Upload Custom File"], label_visibility="collapsed")
     if upload_option == "Upload Custom File":
@@ -766,395 +617,82 @@ with st.sidebar:
     train_button = st.button("▶  Train & Score", use_container_width=True)
     st.markdown("---")
 
-    st.markdown("### Your Stats")
+    st.markdown("### Session Stats")
     st.markdown(f"""
     <div style="padding: 0 4px;">
         <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1e3660;">
-            <span style="font-size:0.8rem;color:#9ab0cc;">Scorings</span>
-            <span class="stat-pill">{user_stats['total_scorings']}</span>
+            <span style="font-size:0.8rem;color:#9ab0cc;">Total Scorings</span>
+            <span class="stat-pill">{admin_stats['total_scorings']}</span>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1e3660;">
             <span style="font-size:0.8rem;color:#9ab0cc;">Leads Scored</span>
-            <span class="stat-pill">{user_stats['total_leads']:,}</span>
+            <span class="stat-pill">{admin_stats['total_leads']:,}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1e3660;">
+            <span style="font-size:0.8rem;color:#9ab0cc;">Total Logins</span>
+            <span class="stat-pill">{admin_stats['total_logins']}</span>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;">
-            <span style="font-size:0.8rem;color:#9ab0cc;">Logins</span>
-            <span class="stat-pill">{user_stats['total_logins']}</span>
+            <span style="font-size:0.8rem;color:#9ab0cc;">Today Logins</span>
+            <span class="stat-pill">{admin_stats['today_logins']}</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-
-    # Show where the DB is stored so the user knows it's permanent
-    st.markdown("### 🗄️ Database Location")
+    st.markdown("### 🗄️ Database")
     st.markdown(f'<div class="db-info">✅ Permanent storage:<br><b>{DB_PATH}</b></div>', unsafe_allow_html=True)
-
     st.markdown("---")
+
     if st.button("⏏  Logout", use_container_width=True, key="logout_btn"):
-        logout_user(st.session_state.user['id'])
-        log_usage(st.session_state.user['id'], 'logout')
+        logout_admin()
+        log_usage('logout')
         st.session_state.logged_in = False
-        st.session_state.user = None
+        st.session_state.admin = None
         st.rerun()
 
 # ============================================================================
 # ADMIN DASHBOARD
 # ============================================================================
-if st.session_state.user['role'] == 'admin':
 
-    sys_stats = get_system_stats()
-    st.markdown(f"""
-    <div class="page-topbar">
-        <div>
-            <p class="page-topbar-title">Admin Command Center</p>
-            <p class="page-topbar-sub">{datetime.now().strftime("%A, %B %d %Y")} &nbsp;·&nbsp; Logged in as <b>{uname}</b></p>
-        </div>
-        <span class="topbar-badge">ADMIN</span>
+st.markdown(f"""
+<div class="page-topbar">
+    <div>
+        <p class="page-topbar-title">LeadScore Pro — Admin Dashboard</p>
+        <p class="page-topbar-sub">{datetime.now().strftime("%A, %B %d %Y")} &nbsp;·&nbsp; Logged in as <b>{uname}</b></p>
     </div>
-    """, unsafe_allow_html=True)
+    <span class="topbar-badge">ADMIN</span>
+</div>
+""", unsafe_allow_html=True)
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    cards = [
-        (col1, "👥", sys_stats['total_users'], "Total Users", "#3b82f6"),
-        (col2, "🟢", sys_stats['currently_online'], "Online Now", "#10b981"),
-        (col3, "📊", sys_stats['total_scorings'], "Scorings", "#f97316"),
-        (col4, "📄", f"{sys_stats['total_leads']:,}", "Total Leads", "#8b5cf6"),
-        (col5, "🕒", sys_stats['today_logins'], "Today Logins", "#ec4899"),
-    ]
-    for col, icon, val, label, accent in cards:
-        with col:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-card-accent" style="background:{accent};"></div>
-                <div class="stat-card-icon" style="background:{accent}18;">{icon}</div>
-                <div class="stat-card-value">{val}</div>
-                <div class="stat-card-label">{label}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    admin_tab1, admin_tab2 = st.tabs(["🎯 Lead Scoring", "👑 User Management"])
-
-    with admin_tab1:
-        if train_button and data_path:
-            with st.spinner("Loading data..."):
-                df = load_data(data_path)
-            if df is not None:
-                with st.expander("Dataset Preview", expanded=False):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Rows", f"{len(df):,}")
-                    c2.metric("Columns", len(df.columns))
-                    c3.metric("Missing", df.isnull().sum().sum())
-                    c4.metric("Memory", f"{df.memory_usage(deep=True).sum()/1024**2:.2f} MB")
-                    st.dataframe(df.head(10), use_container_width=True)
-                try:
-                    model, scored_df, features, accuracy, roc_auc = train_model(df)
-                    st.session_state.update({
-                        'model': model, 'scored_df': scored_df,
-                        'features': features, 'accuracy': accuracy, 'roc_auc': roc_auc
-                    })
-                    log_usage(st.session_state.user['id'], 'score_leads', 'Admin scoring', len(scored_df))
-                    st.success("Model trained & leads scored!")
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-        if 'scored_df' in st.session_state:
-            df = st.session_state['scored_df']
-            accuracy = st.session_state.get('accuracy', 0)
-            roc_auc = st.session_state.get('roc_auc', None)
-
-            t1, t2, t3, t4, t5 = st.tabs(["📊 Dashboard", "🔥 Priority Leads", "📈 Analytics", "📋 All Leads", "💾 Export"])
-
-            with t1:
-                hot = len(df[df['lead_category'] == 'Hot'])
-                warm = len(df[df['lead_category'] == 'Warm'])
-                cold = len(df[df['lead_category'] == 'Cold'])
-                total = len(df)
-
-                st.markdown('<div class="section-card"><p class="section-card-title">Lead Summary</p><p class="section-card-sub">Current scoring results</p>', unsafe_allow_html=True)
-                c1, c2, c3, c4, c5 = st.columns(5)
-                summary_cards = [
-                    (c1, "📊", total, "Total Leads", "#0f2044"),
-                    (c2, "🔥", hot, f"Hot ({hot/total*100:.0f}%)", "#dc2626"),
-                    (c3, "🌡️", warm, f"Warm ({warm/total*100:.0f}%)", "#ea580c"),
-                    (c4, "❄️", cold, f"Cold ({cold/total*100:.0f}%)", "#2563eb"),
-                    (c5, "⭐", f"{df['lead_score'].mean():.1f}", "Avg Score", "#7c3aed"),
-                ]
-                for col, icon, val, label, accent in summary_cards:
-                    with col:
-                        st.markdown(f"""
-                        <div class="stat-card">
-                            <div class="stat-card-accent" style="background:{accent};"></div>
-                            <div class="stat-card-icon" style="background:{accent}18;">{icon}</div>
-                            <div class="stat-card-value">{val}</div>
-                            <div class="stat-card-label">{label}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-                st.markdown("<br>", unsafe_allow_html=True)
-                col_l, col_r = st.columns(2)
-                with col_l:
-                    st.markdown('<div class="section-card"><p class="section-card-title">Model Performance</p>', unsafe_allow_html=True)
-                    g1, g2, g3 = st.columns(3)
-                    with g1:
-                        fig = create_donut_chart(accuracy*100, "Accuracy", "#0f2044", "#f0f4f8")
-                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-                    with g2:
-                        if roc_auc:
-                            fig = create_donut_chart(roc_auc*100, "ROC AUC", "#f97316", "#fff7ed")
-                            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-                    with g3:
-                        fig = create_donut_chart(hot/total*100, "Hot %", "#dc2626", "#fee2e2")
-                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-                    st.markdown('</div>', unsafe_allow_html=True)
-
-                with col_r:
-                    st.markdown('<div class="section-card"><p class="section-card-title">Category Breakdown</p>', unsafe_allow_html=True)
-                    cat_counts = df['lead_category'].value_counts()
-                    fig_pie = go.Figure(data=[go.Pie(
-                        labels=cat_counts.index, values=cat_counts.values, hole=0.55,
-                        marker=dict(colors=['#dc2626', '#ea580c', '#2563eb']),
-                        textinfo='label+percent', textfont=dict(size=12, family='DM Sans'), showlegend=False
-                    )])
-                    fig_pie.update_layout(height=220, margin=dict(l=0,r=0,t=10,b=10),
-                                          paper_bgcolor='rgba(0,0,0,0)', font={'family': 'DM Sans', 'color': '#0f2044'})
-                    st.plotly_chart(fig_pie, use_container_width=True, config={'displayModeBar': False})
-                    st.markdown('</div>', unsafe_allow_html=True)
-
-                st.markdown('<div class="section-card"><p class="section-card-title">Score Distribution</p><p class="section-card-sub">Number of leads at each score range</p>', unsafe_allow_html=True)
-                fig_hist = go.Figure()
-                fig_hist.add_trace(go.Histogram(x=df['lead_score'], nbinsx=20,
-                                                 marker=dict(color='#0f2044', opacity=0.85)))
-                fig_hist.update_layout(height=220, margin=dict(l=0,r=0,t=10,b=10),
-                                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                                        xaxis=dict(title='Score', color='#64748b', gridcolor='#f1f5f9'),
-                                        yaxis=dict(title='Count', color='#64748b', gridcolor='#f1f5f9'),
-                                        font={'family': 'DM Sans', 'color': '#0f2044'})
-                st.plotly_chart(fig_hist, use_container_width=True, config={'displayModeBar': False})
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            with t2:
-                st.markdown('<div class="section-card"><p class="section-card-title">Priority Leads</p><p class="section-card-sub">Filter and view your best leads</p>', unsafe_allow_html=True)
-                c1, c2, c3 = st.columns([2, 2, 1])
-                with c1: cat_filter = st.multiselect("Category", ['Hot', 'Warm', 'Cold'], default=['Hot'])
-                with c2: min_score = st.slider("Min Score", 0, 100, 70)
-                with c3: show_n = st.number_input("Show Top", 10, 100, 20, 10)
-                filtered = df[(df['lead_category'].isin(cat_filter)) & (df['lead_score'] >= min_score)]
-                display_cols = ['lead_id', 'name', 'lead_score', 'lead_category']
-                opt = [c for c in ['source', 'budget_mid', 'preferred_area', 'total_interactions'] if c in filtered.columns]
-                if opt:
-                    sel = st.multiselect("Extra Columns", opt, opt[:2])
-                    display_cols += sel
-                top = filtered.nlargest(show_n, 'lead_score')[display_cols]
-                st.dataframe(top, use_container_width=True, height=500)
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Filtered", len(filtered))
-                c2.metric("Avg Score", f"{filtered['lead_score'].mean():.1f}" if len(filtered) else "—")
-                c3.metric("Max Score", filtered['lead_score'].max() if len(filtered) else "—")
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            with t3:
-                st.markdown('<div class="section-card"><p class="section-card-title">Analytics</p>', unsafe_allow_html=True)
-                if 'source' in df.columns:
-                    src = df.groupby('source').agg({
-                        'lead_score': ['mean', 'count'],
-                        'lead_category': lambda x: (x == 'Hot').sum()
-                    }).round(2)
-                    src.columns = ['Avg Score', 'Count', 'Hot Leads']
-                    src = src.sort_values('Avg Score', ascending=False)
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.dataframe(src, use_container_width=True)
-                    with c2:
-                        fig_bar = go.Figure()
-                        fig_bar.add_trace(go.Bar(x=src.index, y=src['Avg Score'],
-                                                  marker=dict(color='#0f2044', opacity=0.85),
-                                                  text=src['Avg Score'].round(1), textposition='outside'))
-                        fig_bar.update_layout(title="Avg Score by Source", height=320,
-                                               paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                                               font={'family': 'DM Sans', 'color': '#0f2044'},
-                                               xaxis=dict(color='#64748b'), yaxis=dict(color='#64748b', gridcolor='#f1f5f9'))
-                        st.plotly_chart(fig_bar, use_container_width=True, config={'displayModeBar': False})
-                if 'budget_mid' in df.columns:
-                    fig_sc = px.scatter(
-                        df.dropna(subset=['budget_mid']), x='budget_mid', y='lead_score',
-                        color='lead_category',
-                        color_discrete_map={'Hot': '#dc2626', 'Warm': '#ea580c', 'Cold': '#2563eb'},
-                        size='total_interactions' if 'total_interactions' in df.columns else None
-                    )
-                    fig_sc.update_layout(height=380, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                                          font={'family': 'DM Sans', 'color': '#0f2044'},
-                                          xaxis=dict(color='#64748b', gridcolor='#f1f5f9'),
-                                          yaxis=dict(color='#64748b', gridcolor='#f1f5f9'))
-                    st.plotly_chart(fig_sc, use_container_width=True, config={'displayModeBar': False})
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            with t4:
-                st.markdown('<div class="section-card"><p class="section-card-title">All Leads</p>', unsafe_allow_html=True)
-                c1, c2, c3, c4 = st.columns(4)
-                with c1: search = st.text_input("Search", placeholder="Name or ID")
-                with c2: score_rng = st.slider("Score Range", 0, 100, (0, 100))
-                with c3: sort_col = st.selectbox("Sort", ['lead_score', 'lead_id', 'name'])
-                with c4: sort_ord = st.radio("Order", ['Desc', 'Asc'])
-                fdf = df.copy()
-                if search:
-                    fdf = fdf[
-                        fdf['name'].str.contains(search, case=False, na=False) |
-                        fdf['lead_id'].astype(str).str.contains(search, case=False)
-                    ]
-                fdf = fdf[(fdf['lead_score'] >= score_rng[0]) & (fdf['lead_score'] <= score_rng[1])]
-                fdf = fdf.sort_values(sort_col, ascending=(sort_ord == 'Asc'))
-                st.info(f"{len(fdf):,} of {len(df):,} leads shown")
-                st.dataframe(fdf, use_container_width=True, height=500)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            with t5:
-                st.markdown('<div class="section-card"><p class="section-card-title">Export</p><p class="section-card-sub">Download your scored leads</p>', unsafe_allow_html=True)
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.download_button("📄 Download CSV", df.to_csv(index=False).encode('utf-8'),
-                                       'scored_leads.csv', 'text/csv', use_container_width=True)
-                with c2:
-                    @st.cache_data
-                    def to_excel(d):
-                        out = BytesIO()
-                        with pd.ExcelWriter(out, engine='openpyxl') as w:
-                            d.to_excel(w, index=False)
-                        return out.getvalue()
-                    st.download_button("📊 Download Excel", to_excel(df), 'scored_leads.xlsx',
-                                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                                       use_container_width=True)
-                with c3:
-                    hot_df = df[df['lead_category'] == 'Hot']
-                    st.download_button("🔥 Hot Leads Only", hot_df.to_csv(index=False).encode('utf-8'),
-                                       'hot_leads.csv', 'text/csv', use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-        else:
-            st.markdown("""
-            <div class="section-card" style="text-align:center; padding: 60px 20px;">
-                <div style="font-size: 3rem; margin-bottom: 16px;">🎯</div>
-                <h3 style="color: #0f2044; font-size: 1.3rem; margin-bottom: 8px;">Ready to Score Leads</h3>
-                <p style="color: #94a3b8; font-size: 0.9rem;">Select a data source in the sidebar and click <b>Train & Score</b> to begin.</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-    with admin_tab2:
-        st.markdown("""
-        <div class="page-topbar" style="margin-bottom: 20px;">
-            <div>
-                <p class="page-topbar-title">User Management</p>
-                <p class="page-topbar-sub">Create, manage, and monitor all users</p>
-            </div>
+# Top stat cards
+col1, col2, col3, col4 = st.columns(4)
+cards = [
+    (col1, "📊", admin_stats['total_scorings'], "Total Scorings", "#3b82f6"),
+    (col2, "📄", f"{admin_stats['total_leads']:,}", "Total Leads Scored", "#f97316"),
+    (col3, "🔑", admin_stats['total_logins'], "Total Logins", "#8b5cf6"),
+    (col4, "🕒", admin_stats['today_logins'], "Today's Logins", "#10b981"),
+]
+for col, icon, val, label, accent in cards:
+    with col:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-card-accent" style="background:{accent};"></div>
+            <div class="stat-card-icon" style="background:{accent}18;">{icon}</div>
+            <div class="stat-card-value">{val}</div>
+            <div class="stat-card-label">{label}</div>
         </div>
         """, unsafe_allow_html=True)
 
-        ut1, ut2, ut3, ut4 = st.tabs(["🟢 Live Users", "➕ Create User", "👥 All Users", "📊 Activity Log"])
+st.markdown("<br>", unsafe_allow_html=True)
 
-        with ut1:
-            st.markdown('<div class="section-card"><p class="section-card-title">Currently Online</p>', unsafe_allow_html=True)
-            if st.button("Refresh", key="admin_refresh"):
-                st.rerun()
-            active = get_currently_logged_in_users()
-            if active:
-                st.success(f"{len(active)} user(s) online right now")
-                for u in active:
-                    uid, uname_, email_, login_t, urole = u
-                    ustats = get_user_stats(uid)
-                    st.markdown(f"""
-                    <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; padding:14px 18px; margin:8px 0;">
-                        <span class="dot-online"></span>
-                        <b style="color:#0f2044;">{uname_}</b>
-                        <span style="color:#64748b; font-size:0.8rem; margin-left:8px;">({urole})</span><br>
-                        <small style="color:#64748b;">📧 {email_ or 'N/A'} &nbsp;|&nbsp; 🕒 {login_t}</small><br>
-                        <small style="color:#64748b;">📊 {ustats['total_scorings']} scorings &nbsp;|&nbsp; 📄 {ustats['total_leads']:,} leads</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("No users currently online")
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with ut2:
-            st.markdown('<div class="section-card"><p class="section-card-title">Create New User</p>', unsafe_allow_html=True)
-            with st.form("create_user_form"):
-                ca, cb = st.columns(2)
-                with ca:
-                    nu = st.text_input("Username *")
-                    ne = st.text_input("Email")
-                with cb:
-                    np_ = st.text_input("Password *", type="password")
-                    cp = st.text_input("Confirm Password *", type="password")
-                if st.form_submit_button("Create User", type="primary", use_container_width=True):
-                    if nu and np_ == cp and len(np_) >= 6:
-                        if create_user_by_admin(nu, np_, ne):
-                            st.success(f"✅ User `{nu}` created! They can now log in permanently.")
-                        else:
-                            st.error("Username already exists.")
-                    elif len(np_) < 6:
-                        st.error("Password must be ≥ 6 characters")
-                    else:
-                        st.error("Passwords don't match or fields are empty")
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with ut3:
-            st.markdown('<div class="section-card"><p class="section-card-title">All Registered Users</p>', unsafe_allow_html=True)
-            users = get_all_users()
-            if users:
-                user_data = [{
-                    'ID': u[0], 'Username': u[1], 'Email': u[2] or 'N/A',
-                    'Created': u[3], 'Last Login': u[4] or 'Never',
-                    'Status': '🟢 Active' if u[5] else '🔴 Inactive', 'Role': u[6]
-                } for u in users]
-                st.dataframe(pd.DataFrame(user_data), use_container_width=True, height=400)
-            st.markdown("---")
-            st.markdown("**User Actions**")
-            ca, cb, cc = st.columns(3)
-            with ca: uid_a = st.number_input("User ID", min_value=1, step=1)
-            with cb: action_t = st.selectbox("Action", ["Enable", "Disable", "Delete"])
-            with cc:
-                st.write("")
-                if st.button("Execute", type="primary"):
-                    if uid_a != 1:
-                        if action_t == "Enable":
-                            toggle_user_status(uid_a, 1); st.success("User enabled!"); time.sleep(1); st.rerun()
-                        elif action_t == "Disable":
-                            toggle_user_status(uid_a, 0); st.warning("User disabled!"); time.sleep(1); st.rerun()
-                        elif action_t == "Delete":
-                            delete_user(uid_a); st.error("User deleted!"); time.sleep(1); st.rerun()
-                    else:
-                        st.error("Cannot modify admin account")
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with ut4:
-            st.markdown('<div class="section-card"><p class="section-card-title">Activity Log</p><p class="section-card-sub">Last 100 actions across all users</p>', unsafe_allow_html=True)
-            all_acts = get_all_user_activities()
-            if all_acts:
-                act_data = [{
-                    'Username': a[0], 'Action': a[1], 'Details': a[2] or '—',
-                    'Leads': a[3] or '—', 'Timestamp': a[4]
-                } for a in all_acts]
-                st.dataframe(pd.DataFrame(act_data), use_container_width=True, height=500)
-            else:
-                st.info("No activities logged yet")
-            st.markdown('</div>', unsafe_allow_html=True)
+# Main tabs
+main_tab1, main_tab2, main_tab3 = st.tabs(["🎯 Lead Scoring", "📊 Activity Log", "⚙️ Settings"])
 
 # ============================================================================
-# USER DASHBOARD
+# TAB 1 — LEAD SCORING
 # ============================================================================
-else:
-    st.markdown(f"""
-    <div class="page-topbar">
-        <div>
-            <p class="page-topbar-title">Lead Scoring Dashboard</p>
-            <p class="page-topbar-sub">{datetime.now().strftime("%A, %B %d %Y")} &nbsp;·&nbsp; Welcome back, <b>{uname}</b></p>
-        </div>
-        <span class="topbar-badge">USER</span>
-    </div>
-    """, unsafe_allow_html=True)
-
+with main_tab1:
     if train_button and data_path:
         with st.spinner("Loading data..."):
             df = load_data(data_path)
@@ -1172,8 +710,8 @@ else:
                     'model': model, 'scored_df': scored_df,
                     'features': features, 'accuracy': accuracy, 'roc_auc': roc_auc
                 })
-                log_usage(st.session_state.user['id'], 'score_leads', 'User scoring', len(scored_df))
-                st.success("Scoring complete!")
+                log_usage('score_leads', 'Admin scoring', len(scored_df))
+                st.success("Model trained & leads scored!")
                 st.balloons()
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -1183,7 +721,7 @@ else:
         accuracy = st.session_state.get('accuracy', 0)
         roc_auc = st.session_state.get('roc_auc', None)
 
-        t1, t2, t3, t4, t5 = st.tabs(["📊 Dashboard", "🔥 Priority", "📈 Analytics", "📋 All Leads", "💾 Export"])
+        t1, t2, t3, t4, t5 = st.tabs(["📊 Dashboard", "🔥 Priority Leads", "📈 Analytics", "📋 All Leads", "💾 Export"])
 
         with t1:
             hot = len(df[df['lead_category'] == 'Hot'])
@@ -1191,15 +729,16 @@ else:
             cold = len(df[df['lead_category'] == 'Cold'])
             total = len(df)
 
+            st.markdown('<div class="section-card"><p class="section-card-title">Lead Summary</p><p class="section-card-sub">Current scoring results</p>', unsafe_allow_html=True)
             c1, c2, c3, c4, c5 = st.columns(5)
-            cards = [
+            summary_cards = [
                 (c1, "📊", total, "Total Leads", "#0f2044"),
                 (c2, "🔥", hot, f"Hot ({hot/total*100:.0f}%)", "#dc2626"),
                 (c3, "🌡️", warm, f"Warm ({warm/total*100:.0f}%)", "#ea580c"),
                 (c4, "❄️", cold, f"Cold ({cold/total*100:.0f}%)", "#2563eb"),
                 (c5, "⭐", f"{df['lead_score'].mean():.1f}", "Avg Score", "#7c3aed"),
             ]
-            for col, icon, val, label, accent in cards:
+            for col, icon, val, label, accent in summary_cards:
                 with col:
                     st.markdown(f"""
                     <div class="stat-card">
@@ -1209,6 +748,7 @@ else:
                         <div class="stat-card-label">{label}</div>
                     </div>
                     """, unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
             col_l, col_r = st.columns(2)
@@ -1216,15 +756,15 @@ else:
                 st.markdown('<div class="section-card"><p class="section-card-title">Model Performance</p>', unsafe_allow_html=True)
                 g1, g2, g3 = st.columns(3)
                 with g1:
-                    st.plotly_chart(create_donut_chart(accuracy*100, "Accuracy", "#0f2044", "#f0f4f8"),
-                                    use_container_width=True, config={'displayModeBar': False})
+                    fig = create_donut_chart(accuracy*100, "Accuracy", "#0f2044", "#f0f4f8")
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
                 with g2:
                     if roc_auc:
-                        st.plotly_chart(create_donut_chart(roc_auc*100, "ROC AUC", "#f97316", "#fff7ed"),
-                                        use_container_width=True, config={'displayModeBar': False})
+                        fig = create_donut_chart(roc_auc*100, "ROC AUC", "#f97316", "#fff7ed")
+                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
                 with g3:
-                    st.plotly_chart(create_donut_chart(hot/total*100, "Hot %", "#dc2626", "#fee2e2"),
-                                    use_container_width=True, config={'displayModeBar': False})
+                    fig = create_donut_chart(hot/total*100, "Hot %", "#dc2626", "#fee2e2")
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
                 st.markdown('</div>', unsafe_allow_html=True)
 
             with col_r:
@@ -1240,66 +780,112 @@ else:
                 st.plotly_chart(fig_pie, use_container_width=True, config={'displayModeBar': False})
                 st.markdown('</div>', unsafe_allow_html=True)
 
-            st.markdown('<div class="section-card"><p class="section-card-title">Score Distribution</p>', unsafe_allow_html=True)
+            st.markdown('<div class="section-card"><p class="section-card-title">Score Distribution</p><p class="section-card-sub">Number of leads at each score range</p>', unsafe_allow_html=True)
             fig_hist = go.Figure()
             fig_hist.add_trace(go.Histogram(x=df['lead_score'], nbinsx=20,
                                              marker=dict(color='#0f2044', opacity=0.85)))
-            fig_hist.update_layout(height=200, margin=dict(l=0,r=0,t=10,b=10),
+            fig_hist.update_layout(height=220, margin=dict(l=0,r=0,t=10,b=10),
                                     paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                                    xaxis=dict(color='#64748b', gridcolor='#f1f5f9'),
-                                    yaxis=dict(color='#64748b', gridcolor='#f1f5f9'),
-                                    font={'family': 'DM Sans'})
+                                    xaxis=dict(title='Score', color='#64748b', gridcolor='#f1f5f9'),
+                                    yaxis=dict(title='Count', color='#64748b', gridcolor='#f1f5f9'),
+                                    font={'family': 'DM Sans', 'color': '#0f2044'})
             st.plotly_chart(fig_hist, use_container_width=True, config={'displayModeBar': False})
             st.markdown('</div>', unsafe_allow_html=True)
 
         with t2:
-            st.markdown('<div class="section-card"><p class="section-card-title">Priority Leads</p>', unsafe_allow_html=True)
+            st.markdown('<div class="section-card"><p class="section-card-title">Priority Leads</p><p class="section-card-sub">Filter and view your best leads</p>', unsafe_allow_html=True)
             c1, c2, c3 = st.columns([2, 2, 1])
             with c1: cat_filter = st.multiselect("Category", ['Hot', 'Warm', 'Cold'], default=['Hot'])
             with c2: min_score = st.slider("Min Score", 0, 100, 70)
-            with c3: show_n = st.number_input("Show", 10, 100, 20, 10)
+            with c3: show_n = st.number_input("Show Top", 10, 100, 20, 10)
             filtered = df[(df['lead_category'].isin(cat_filter)) & (df['lead_score'] >= min_score)]
-            st.dataframe(filtered.nlargest(show_n, 'lead_score'), use_container_width=True, height=500)
+            display_cols = ['lead_id', 'name', 'lead_score', 'lead_category']
+            opt = [c for c in ['source', 'budget_mid', 'preferred_area', 'total_interactions'] if c in filtered.columns]
+            if opt:
+                sel = st.multiselect("Extra Columns", opt, opt[:2])
+                display_cols += sel
+            top = filtered.nlargest(show_n, 'lead_score')[display_cols]
+            st.dataframe(top, use_container_width=True, height=500)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Filtered", len(filtered))
+            c2.metric("Avg Score", f"{filtered['lead_score'].mean():.1f}" if len(filtered) else "—")
+            c3.metric("Max Score", filtered['lead_score'].max() if len(filtered) else "—")
             st.markdown('</div>', unsafe_allow_html=True)
 
         with t3:
             st.markdown('<div class="section-card"><p class="section-card-title">Analytics</p>', unsafe_allow_html=True)
             if 'source' in df.columns:
-                src = df.groupby('source')['lead_score'].agg(['mean', 'count']).sort_values('mean', ascending=False)
-                fig_bar = go.Figure()
-                fig_bar.add_trace(go.Bar(x=src.index, y=src['mean'],
-                                          marker=dict(color='#0f2044', opacity=0.85),
-                                          text=src['mean'].round(1), textposition='outside'))
-                fig_bar.update_layout(title="Avg Score by Source", height=320,
-                                       paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                                       font={'family': 'DM Sans', 'color': '#0f2044'},
-                                       xaxis=dict(color='#64748b'), yaxis=dict(color='#64748b', gridcolor='#f1f5f9'))
-                st.plotly_chart(fig_bar, use_container_width=True, config={'displayModeBar': False})
+                src = df.groupby('source').agg({
+                    'lead_score': ['mean', 'count'],
+                    'lead_category': lambda x: (x == 'Hot').sum()
+                }).round(2)
+                src.columns = ['Avg Score', 'Count', 'Hot Leads']
+                src = src.sort_values('Avg Score', ascending=False)
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.dataframe(src, use_container_width=True)
+                with c2:
+                    fig_bar = go.Figure()
+                    fig_bar.add_trace(go.Bar(x=src.index, y=src['Avg Score'],
+                                              marker=dict(color='#0f2044', opacity=0.85),
+                                              text=src['Avg Score'].round(1), textposition='outside'))
+                    fig_bar.update_layout(title="Avg Score by Source", height=320,
+                                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                                           font={'family': 'DM Sans', 'color': '#0f2044'},
+                                           xaxis=dict(color='#64748b'), yaxis=dict(color='#64748b', gridcolor='#f1f5f9'))
+                    st.plotly_chart(fig_bar, use_container_width=True, config={'displayModeBar': False})
+            if 'budget_mid' in df.columns:
+                fig_sc = px.scatter(
+                    df.dropna(subset=['budget_mid']), x='budget_mid', y='lead_score',
+                    color='lead_category',
+                    color_discrete_map={'Hot': '#dc2626', 'Warm': '#ea580c', 'Cold': '#2563eb'},
+                    size='total_interactions' if 'total_interactions' in df.columns else None
+                )
+                fig_sc.update_layout(height=380, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                                      font={'family': 'DM Sans', 'color': '#0f2044'},
+                                      xaxis=dict(color='#64748b', gridcolor='#f1f5f9'),
+                                      yaxis=dict(color='#64748b', gridcolor='#f1f5f9'))
+                st.plotly_chart(fig_sc, use_container_width=True, config={'displayModeBar': False})
             st.markdown('</div>', unsafe_allow_html=True)
 
         with t4:
             st.markdown('<div class="section-card"><p class="section-card-title">All Leads</p>', unsafe_allow_html=True)
-            st.dataframe(df, use_container_width=True, height=500)
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: search = st.text_input("Search", placeholder="Name or ID")
+            with c2: score_rng = st.slider("Score Range", 0, 100, (0, 100))
+            with c3: sort_col = st.selectbox("Sort", ['lead_score', 'lead_id', 'name'])
+            with c4: sort_ord = st.radio("Order", ['Desc', 'Asc'])
+            fdf = df.copy()
+            if search:
+                fdf = fdf[
+                    fdf['name'].str.contains(search, case=False, na=False) |
+                    fdf['lead_id'].astype(str).str.contains(search, case=False)
+                ]
+            fdf = fdf[(fdf['lead_score'] >= score_rng[0]) & (fdf['lead_score'] <= score_rng[1])]
+            fdf = fdf.sort_values(sort_col, ascending=(sort_ord == 'Asc'))
+            st.info(f"{len(fdf):,} of {len(df):,} leads shown")
+            st.dataframe(fdf, use_container_width=True, height=500)
             st.markdown('</div>', unsafe_allow_html=True)
 
         with t5:
-            st.markdown('<div class="section-card"><p class="section-card-title">Export</p>', unsafe_allow_html=True)
+            st.markdown('<div class="section-card"><p class="section-card-title">Export</p><p class="section-card-sub">Download your scored leads</p>', unsafe_allow_html=True)
             c1, c2, c3 = st.columns(3)
             with c1:
-                st.download_button("📄 CSV", df.to_csv(index=False).encode('utf-8'),
-                                   'leads.csv', 'text/csv', use_container_width=True)
+                st.download_button("📄 Download CSV", df.to_csv(index=False).encode('utf-8'),
+                                   'scored_leads.csv', 'text/csv', use_container_width=True)
             with c2:
                 @st.cache_data
-                def to_excel2(d):
+                def to_excel(d):
                     out = BytesIO()
                     with pd.ExcelWriter(out, engine='openpyxl') as w:
                         d.to_excel(w, index=False)
                     return out.getvalue()
-                st.download_button("📊 Excel", to_excel2(df), 'leads.xlsx',
+                st.download_button("📊 Download Excel", to_excel(df), 'scored_leads.xlsx',
                                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                                    use_container_width=True)
             with c3:
-                st.download_button("🔥 Hot Only", df[df['lead_category'] == 'Hot'].to_csv(index=False).encode('utf-8'),
+                hot_df = df[df['lead_category'] == 'Hot']
+                st.download_button("🔥 Hot Leads Only", hot_df.to_csv(index=False).encode('utf-8'),
                                    'hot_leads.csv', 'text/csv', use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1307,16 +893,71 @@ else:
         st.markdown("""
         <div class="section-card" style="text-align:center; padding: 60px 20px;">
             <div style="font-size: 3rem; margin-bottom: 16px;">🎯</div>
-            <h3 style="color: #0f2044; font-size: 1.3rem; margin-bottom: 8px;">Ready to Score Your Leads</h3>
-            <p style="color: #94a3b8; font-size: 0.9rem;">Select a data source from the sidebar and click <b>Train & Score</b> to get started.</p>
+            <h3 style="color: #0f2044; font-size: 1.3rem; margin-bottom: 8px;">Ready to Score Leads</h3>
+            <p style="color: #94a3b8; font-size: 0.9rem;">Select a data source in the sidebar and click <b>Train & Score</b> to begin.</p>
         </div>
         """, unsafe_allow_html=True)
 
-# Footer
+# ============================================================================
+# TAB 2 — ACTIVITY LOG
+# ============================================================================
+with main_tab2:
+    st.markdown('<div class="section-card"><p class="section-card-title">Activity Log</p><p class="section-card-sub">Last 100 actions performed in this platform</p>', unsafe_allow_html=True)
+    if st.button("🔄 Refresh", key="refresh_log"):
+        st.rerun()
+    all_acts = get_activity_log()
+    if all_acts:
+        act_data = [{
+            'Action': a[0],
+            'Details': a[1] or '—',
+            'Leads Scored': a[2] or '—',
+            'Timestamp': a[3]
+        } for a in all_acts]
+        st.dataframe(pd.DataFrame(act_data), use_container_width=True, height=500)
+    else:
+        st.info("No activities logged yet.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ============================================================================
+# TAB 3 — SETTINGS
+# ============================================================================
+with main_tab3:
+    st.markdown('<div class="section-card"><p class="section-card-title">Change Admin Password</p><p class="section-card-sub">Update your login credentials</p>', unsafe_allow_html=True)
+    with st.form("change_password_form"):
+        cp1 = st.text_input("New Password", type="password", placeholder="Minimum 6 characters")
+        cp2 = st.text_input("Confirm New Password", type="password", placeholder="Repeat password")
+        if st.form_submit_button("Update Password", type="primary"):
+            if cp1 and cp1 == cp2 and len(cp1) >= 6:
+                change_admin_password(cp1)
+                log_usage('change_password', 'Admin changed password')
+                st.success("✅ Password updated successfully!")
+            elif len(cp1) < 6:
+                st.error("Password must be at least 6 characters.")
+            else:
+                st.error("Passwords do not match.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-card"><p class="section-card-title">System Info</p>', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"""
+        <p style="font-size:0.85rem;color:#64748b;">
+            <b>App Version:</b> LeadScore Pro v3.0<br>
+            <b>Admin:</b> {uname}<br>
+            <b>Last Login:</b> {admin_stats['last_login']}<br>
+        </p>
+        """, unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'<div class="db-info">🗄️ DB Location:<br><b>{DB_PATH}</b></div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ============================================================================
+# FOOTER
+# ============================================================================
 st.markdown(f"""
 <div style="text-align:center; padding: 16px 0; margin-top: 8px; border-top: 1px solid #e8edf2;">
     <p style="font-size:0.75rem; color:#94a3b8; margin:0;">
-        LeadScore Pro v2.1 &nbsp;·&nbsp; Logged in as <b style="color:#0f2044;">{st.session_state.user['username']}</b>
+        LeadScore Pro v3.0 &nbsp;·&nbsp; Admin: <b style="color:#0f2044;">{uname}</b>
         &nbsp;·&nbsp; {datetime.now().strftime("%Y-%m-%d %H:%M")}
         &nbsp;·&nbsp; DB: <code style="font-size:0.7rem;">{DB_PATH}</code>
     </p>
